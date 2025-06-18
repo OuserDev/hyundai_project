@@ -1,0 +1,16 @@
+---
+- name: 파일 및 디렉토리 관리 - /etc/shadow 파일 소유자 및 권한 설정
+  hosts: webservers
+  become: yes
+
+  tasks:
+    - name: "/etc/shadow 파일 소유자 및 권한 설정 (소유자: root, 권한: 400)"
+      # /etc/shadow 파일은 암호화된 사용자 패스워드를 담고 있으며, root만 읽을 수 있도록 가장 엄격하게 권한을 제한합니다.
+      # 이 파일은 민감한 정보를 포함하므로, 접근 권한을 최소화하는 것이 중요합니다.
+      # 가이드에 명시된 특정 기준이 없으므로, 일반적으로 권장되는 가장 엄격한 권한(root만 읽기 가능)을 적용합니다.
+      ansible.builtin.file:
+        path: "/etc/shadow"
+        owner: root
+        group: root # 일반적으로 root 또는 shadow 그룹을 사용하지만, 가장 엄격한 접근을 위해 root:root로 설정합니다.
+        mode: '0400' # 'r--------' (root만 읽기 가능, 다른 사용자/그룹 접근 불가)
+        state: file
