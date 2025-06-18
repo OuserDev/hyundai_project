@@ -6,7 +6,7 @@
 
   # 1. 변수 정의
   vars:
-    result_json_path: "/tmp/security_report_1.1.7_orphan_files.json"
+    result_json_path: "/tmp/security_report_orphan_files.json"
     remediation_tasks_performed: []
 
   tasks:
@@ -35,7 +35,7 @@
     - name: 초기 JSON 보고서 생성
       ansible.builtin.set_fact:
         current_report_data:
-          playbook_name: "1.1.7_orphan_file_ownership.yml"
+          playbook_name: "1_1_7_orphan_file_ownership.yml"
           task_description: "소유자 없는 파일 및 디렉터리 관리"
           diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
           is_vulnerable: "{{ is_vulnerable }}"
