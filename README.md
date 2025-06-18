@@ -33,13 +33,13 @@ Ansible + Python을 활용한 서버 보안 취약점 자동 점검 및 보고�
 
 ## 프로젝트 디렉토리
 ```
-├── 📁 inventories/                     # Ansible inventory 파일들
+├── 📁 inventories/                     # Ansible inventory 파일들 (ignore 처리)
 │   └── 📄 inventory_20250618_101836.ini
 │
-├── 📁 logs/                            # 실행 로그 파일들
+├── 📁 logs/                            # 실행 로그 파일들 (ignore 처리)
 │   └── (실행 로그들)
 │
-├── 📁 playbooks/                       # 동적 생성된 플레이북들
+├── 📁 playbooks/                       # 동적 생성된 플레이북들 (ignore 처리)
 │   └── 📄 security_check_20250618_101836.yml
 │
 ├── 📁 tasks/                           # 개별 KISA 점검 태스크들
