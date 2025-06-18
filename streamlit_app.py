@@ -39,7 +39,7 @@ def save_generated_playbook(active_servers, playbook_tasks):
     # 첫 번째 플레이: 기본 설정
     main_play = {
         'name': 'KISA Security Vulnerability Check',
-        'hosts': active_servers[0] if len(active_servers) == 1 else active_servers,  # 단일 서버면 문자열, 다중이면 리스트
+        'hosts': 'target_servers',
         'become': True
     }
     playbook_content.append(main_play)
@@ -60,14 +60,27 @@ def save_generated_playbook(active_servers, playbook_tasks):
     # 디렉터리 생성
     os.makedirs("playbooks", exist_ok=True)
     
+    # 결과 저장용 폴더 생성
+    result_folder_name = f"playbook_result_{timestamp}"
+    result_folder_path = os.path.join("playbooks", result_folder_name)
+    os.makedirs(result_folder_path, exist_ok=True)
+    
     # YAML 파일로 저장
     with open(filepath, 'w', encoding='utf-8') as f:
         yaml.dump(playbook_content, f, default_flow_style=False, allow_unicode=True)
     
-    return filepath, filename
+    return filepath, filename, result_folder_path
 
 def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
     """백엔드에서 Ansible 플레이북 실행"""
+    
+    # 로그 파일 경로 생성
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"ansible_execute_log_{timestamp}.log"
+    log_path = os.path.join("logs", log_filename)
+    
+    # logs 디렉터리 생성
+    os.makedirs("logs", exist_ok=True)
     
     # 실행 명령어 구성
     cmd = [
@@ -86,13 +99,29 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
     print(f"📂 플레이북: {playbook_path}")
     print(f"📋 인벤토리: {inventory_path}")
     print(f"🎯 대상 서버: {', '.join(limit_hosts)}")
+    print(f"📄 로그 파일: {log_path}")
     print(f"{'='*80}\n")
     
     # 실행 결과를 담을 큐
     output_queue = queue.Queue()
     
     def run_command():
+        log_lines = []  # 로그 파일에 저장할 내용
+        
         try:
+            # 로그 파일 헤더 작성
+            log_header = [
+                f"=== Ansible Playbook 실행 로그 ===",
+                f"실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"명령어: {' '.join(cmd)}",
+                f"플레이북: {playbook_path}",
+                f"인벤토리: {inventory_path}",
+                f"대상 서버: {', '.join(limit_hosts)}",
+                f"{'='*50}",
+                ""
+            ]
+            log_lines.extend(log_header)
+            
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -108,11 +137,28 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
                 # 백엔드 콘솔에 실시간 출력
                 print(f"[ANSIBLE] {line_stripped}")
                 
+                # 로그 파일용 라인 추가
+                log_lines.append(f"[{datetime.now().strftime('%H:%M:%S')}] {line_stripped}")
+                
                 # 스트림릿용 큐에도 추가
                 output_queue.put(('output', line_stripped))
             
             # 프로세스 완료 대기
             return_code = process.wait()
+            
+            # 완료 메시지를 로그에 추가
+            completion_msg = f"실행 완료 - 종료 코드: {return_code}"
+            log_lines.append(f"\n{'='*50}")
+            log_lines.append(f"[{datetime.now().strftime('%H:%M:%S')}] {completion_msg}")
+            log_lines.append(f"실행 종료 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 로그 파일에 저장
+            try:
+                with open(log_path, 'w', encoding='utf-8') as log_file:
+                    log_file.write('\n'.join(log_lines))
+                print(f"📄 로그 저장 완료: {log_path}")
+            except Exception as log_error:
+                print(f"❌ 로그 파일 저장 실패: {str(log_error)}")
             
             # 백엔드 콘솔에 완료 메시지
             print(f"\n{'='*80}")
@@ -126,6 +172,16 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
             
         except Exception as e:
             error_msg = f"실행 오류: {str(e)}"
+            log_lines.append(f"\n[{datetime.now().strftime('%H:%M:%S')}] ERROR: {error_msg}")
+            
+            # 에러 발생 시에도 로그 파일 저장
+            try:
+                with open(log_path, 'w', encoding='utf-8') as log_file:
+                    log_file.write('\n'.join(log_lines))
+                print(f"📄 에러 로그 저장 완료: {log_path}")
+            except Exception as log_error:
+                print(f"❌ 에러 로그 파일 저장 실패: {str(log_error)}")
+            
             print(f"❌ [ERROR] {error_msg}")
             output_queue.put(('error', error_msg))
     
@@ -136,8 +192,8 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
     
     return output_queue, thread
 
-def save_inventory_file(servers_info):
-    """서버 정보를 inventory 파일로 저장 (원본 구조 정확히 유지)"""
+def save_inventory_file(servers_info, selected_servers=None):
+    """서버 정보를 inventory 파일로 저장 (선택된 서버들을 target_servers 그룹으로 설정)"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     inventory_filename = f"inventory_{timestamp}.ini"
     inventory_path = os.path.join("inventories", inventory_filename)
@@ -145,38 +201,48 @@ def save_inventory_file(servers_info):
     # 디렉터리 생성
     os.makedirs("inventories", exist_ok=True)
     
+    print(f"\n=== INVENTORY 파일 생성 ===")
+    print(f"파일 경로: {inventory_path}")
+    print(f"선택된 서버들: {selected_servers}")
+    
     inventory_content = []
     groups = {}
     
+    # 선택된 서버들만 필터링 (선택된 서버가 있을 때만)
+    if selected_servers:
+        filtered_servers_info = {name: info for name, info in servers_info.items() if name in selected_servers}
+        print(f"필터링된 서버들: {list(filtered_servers_info.keys())}")
+    else:
+        filtered_servers_info = servers_info
+        print(f"모든 서버 사용: {list(servers_info.keys())}")
+    
     # 그룹별로 서버 정리
-    for server_name, info in servers_info.items():
+    for server_name, info in filtered_servers_info.items():
         group = info.get('group', 'default')
         if group not in groups:
             groups[group] = []
         groups[group].append((server_name, info))
     
     # 실제 [all:vars]에 있던 변수들만 구분 (전역 변수)
-    # 이는 모든 서버에 동일하게 적용되면서, 개별 서버 라인에는 없었던 변수들
     true_global_vars = {}
     server_specific_vars = set()
     
     # 먼저 각 서버별로 정의된 변수들을 수집
-    for server_name, info in servers_info.items():
+    for server_name, info in filtered_servers_info.items():
         ansible_vars = info.get('ansible_vars', {})
         for var_name in ansible_vars.keys():
             # 개별 서버에서 정의된 변수들은 server_specific으로 간주
-            # (원본에서 서버 라인에 있었던 것들)
-            if var_name in ['ansible_host', 'ansible_port', 'ansible_user', 'ansible_connection']:
+            if var_name in ['ansible_host', 'ansible_port', 'ansible_user', 'ansible_connection', 'ansible_become_pass']:
                 server_specific_vars.add(var_name)
     
     # 진짜 전역 변수는 개별 서버에 정의되지 않은 것들만
-    for server_name, info in servers_info.items():
+    for server_name, info in filtered_servers_info.items():
         ansible_vars = info.get('ansible_vars', {})
         for var_name, var_value in ansible_vars.items():
             if var_name not in server_specific_vars:
                 # 모든 서버에 동일한 값으로 존재하는지 확인
                 is_truly_global = True
-                for other_server, other_info in servers_info.items():
+                for other_server, other_info in filtered_servers_info.items():
                     other_vars = other_info.get('ansible_vars', {})
                     if var_name not in other_vars or other_vars[var_name] != var_value:
                         is_truly_global = False
@@ -185,9 +251,35 @@ def save_inventory_file(servers_info):
                 if is_truly_global:
                     true_global_vars[var_name] = var_value
     
-    # 그룹별 호스트 섹션 생성 (원본 형태 유지)
+    # 1. target_servers 그룹 생성 (선택된 모든 서버 포함) - 플레이북 실행용
+    if filtered_servers_info:
+        inventory_content.append("[target_servers]")
+        print(f"\n[target_servers] 그룹 생성:")
+        
+        for server_name, info in filtered_servers_info.items():
+            line = server_name
+            
+            # 개별 변수들 추가 (전역 변수가 아닌 것들)
+            ansible_vars = info.get('ansible_vars', {})
+            individual_vars = []
+            
+            for var_name, var_value in ansible_vars.items():
+                # 전역 변수가 아닌 것들만 개별 서버 라인에 추가
+                if var_name not in true_global_vars:
+                    individual_vars.append(f"{var_name}={var_value}")
+            
+            if individual_vars:
+                line += " " + " ".join(individual_vars)
+            
+            inventory_content.append(line)
+            print(f"  {line}")
+        
+        inventory_content.append("")  # 그룹 간 빈 줄
+    
+    # 2. 기존 그룹별 호스트 섹션 생성 (원본 형태 유지) - 참조용
     for group_name, servers in groups.items():
         inventory_content.append(f"[{group_name}]")
+        print(f"\n[{group_name}] 그룹:")
         
         for server_name, info in servers:
             line = server_name
@@ -205,19 +297,28 @@ def save_inventory_file(servers_info):
                 line += " " + " ".join(individual_vars)
             
             inventory_content.append(line)
+            print(f"  {line}")
         
         inventory_content.append("")  # 그룹 간 빈 줄
     
     # [all:vars] 섹션 추가 (진짜 전역 변수만)
     if true_global_vars:
         inventory_content.append("[all:vars]")
+        print(f"\n[all:vars] 섹션:")
         for var_name, var_value in true_global_vars.items():
-            inventory_content.append(f"{var_name}={var_value}")
+            var_line = f"{var_name}={var_value}"
+            inventory_content.append(var_line)
+            print(f"  {var_line}")
     
     # 파일로 저장
-    with open(inventory_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(inventory_content))
+    final_content = '\n'.join(inventory_content)
+    print(f"\n=== 최종 inventory 내용 ===")
+    print(final_content)
     
+    with open(inventory_path, 'w', encoding='utf-8') as f:
+        f.write(final_content)
+    
+    print(f"\n파일 저장 완료: {inventory_path}")
     return inventory_path
 
 # 설정 파일들 로드
@@ -358,93 +459,6 @@ def parse_inventory_file(file_content):
         print(f"  변수: {server_info['ansible_vars']}")
     
     return servers
-
-def save_inventory_file(servers_info):
-    """서버 정보를 inventory 파일로 저장 (원본 구조 유지)"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    inventory_filename = f"inventory_{timestamp}.ini"
-    inventory_path = os.path.join("inventories", inventory_filename)
-    
-    # 디렉터리 생성
-    os.makedirs("inventories", exist_ok=True)
-    
-    print(f"\n=== INVENTORY 파일 생성 ===")
-    print(f"파일 경로: {inventory_path}")
-    
-    inventory_content = []
-    groups = {}
-    all_vars = {}
-    
-    # 그룹별로 서버 정리
-    for server_name, info in servers_info.items():
-        group = info.get('group', 'default')
-        if group not in groups:
-            groups[group] = []
-        groups[group].append((server_name, info))
-    
-    # 공통 변수 찾기 (모든 서버에 동일하게 있는 변수들)
-    server_list = list(servers_info.values())
-    if server_list:
-        # 첫 번째 서버의 변수를 기준으로 시작
-        first_server_vars = server_list[0].get('ansible_vars', {})
-        
-        for var_name, var_value in first_server_vars.items():
-            # 모든 서버에 같은 값으로 존재하는지 확인
-            is_common = True
-            for server_info in server_list:
-                server_vars = server_info.get('ansible_vars', {})
-                if var_name not in server_vars or server_vars[var_name] != var_value:
-                    is_common = False
-                    break
-            
-            if is_common:
-                all_vars[var_name] = var_value
-    
-    print(f"공통 변수들: {all_vars}")
-    
-    # 그룹별 호스트 섹션 생성
-    for group_name, servers in groups.items():
-        inventory_content.append(f"[{group_name}]")
-        print(f"\n[{group_name}] 그룹:")
-        
-        for server_name, info in servers:
-            line = server_name
-            
-            # 개별 변수들 추가 (공통 변수가 아닌 것들만)
-            ansible_vars = info.get('ansible_vars', {})
-            individual_vars = []
-            
-            for var_name, var_value in ansible_vars.items():
-                if var_name not in all_vars or all_vars[var_name] != var_value:
-                    individual_vars.append(f"{var_name}={var_value}")
-            
-            if individual_vars:
-                line += " " + " ".join(individual_vars)
-            
-            inventory_content.append(line)
-            print(f"  {line}")
-        
-        inventory_content.append("")  # 그룹 간 빈 줄
-    
-    # [all:vars] 섹션 추가
-    if all_vars:
-        inventory_content.append("[all:vars]")
-        print(f"\n[all:vars]:")
-        for var_name, var_value in all_vars.items():
-            var_line = f"{var_name}={var_value}"
-            inventory_content.append(var_line)
-            print(f"  {var_line}")
-    
-    # 파일로 저장
-    final_content = '\n'.join(inventory_content)
-    print(f"\n=== 최종 inventory 내용 ===")
-    print(final_content)
-    
-    with open(inventory_path, 'w', encoding='utf-8') as f:
-        f.write(final_content)
-    
-    print(f"\n파일 저장 완료: {inventory_path}")
-    return inventory_path
 
 def generate_task_filename(item_description):
     """KISA 점검 항목 설명을 파일명으로 변환"""
@@ -736,7 +750,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 print(f"{'='*80}")
                 
                 # 플레이북 파일로 저장
-                playbook_path, playbook_filename = save_generated_playbook(active_servers, playbook_tasks)
+                playbook_path, playbook_filename, result_folder_path = save_generated_playbook(active_servers, playbook_tasks)
                 
                 # inventory 파일 저장
                 inventory_path = save_inventory_file(servers_info)
@@ -752,6 +766,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 st.session_state.inventory_path = inventory_path
                 st.session_state.playbook_tasks = playbook_tasks
                 st.session_state.selected_checks = selected_checks if 'selected_checks' in locals() else {}
+                st.session_state.result_folder_path = result_folder_path  # 결과 폴더 경로 추가
                 
                 time.sleep(1)
                 
@@ -773,6 +788,7 @@ if active_servers and static_enabled and vulnerability_categories:
             "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
             "저장 경로": st.session_state.playbook_path,
             "inventory 파일": st.session_state.inventory_path,
+            "결과 저장 폴더": st.session_state.result_folder_path,  # 결과 폴더 정보 추가
             "생성 시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "예상 소요 시간": f"{len(active_servers) * 3}분"
         }
@@ -784,7 +800,7 @@ if active_servers and static_enabled and vulnerability_categories:
         if st.button("▶️ 실행 시작 (생성된 Ansible 플레이북을 실제로 실행)", type="secondary", use_container_width=True):
             # 실행 명령어 표시
             st.subheader("🖥️ 실행 중인 Ansible 명령어")
-            cmd_text = f"ansible-playbook -i {st.session_state.inventory_path} {st.session_state.playbook_path} --limit {','.join(active_servers)} -v"
+            cmd_text = f"ansible-playbook -i {st.session_state.inventory_path} {st.session_state.playbook_path} --limit target_servers -v"
             st.code(cmd_text)
             
             # 실시간 출력 영역
@@ -802,6 +818,11 @@ if active_servers and static_enabled and vulnerability_categories:
                     st.session_state.inventory_path, 
                     active_servers
                 )
+                
+                # 로그 파일 정보 표시
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                log_filename = f"ansible_execute_log_{timestamp}.log"
+                st.info(f"📄 실행 로그가 다음 위치에 저장됩니다: `logs/{log_filename}`")
                 
                 displayed_logs = []
                 finished = False
@@ -825,13 +846,16 @@ if active_servers and static_enabled and vulnerability_categories:
                             finished = True
                             if content == 0:
                                 st.success("🎉 Ansible 플레이북 실행 완료!")
+                                st.success(f"📄 전체 실행 로그가 `logs/{log_filename}`에 저장되었습니다.")
                                 print("🎉 스트림릿 UI에서도 실행 완료 확인됨")
                             else:
                                 st.error(f"❌ 실행 실패 (종료 코드: {content})")
+                                st.info(f"📄 에러 로그가 `logs/{log_filename}`에 저장되었습니다.")
                                 print(f"❌ 스트림릿 UI에서도 실행 실패 확인됨 (코드: {content})")
                                 
                         elif msg_type == 'error':
                             st.error(f"❌ 실행 오류: {content}")
+                            st.info(f"📄 에러 로그가 `logs/{log_filename}`에 저장되었습니다.")
                             print(f"❌ 스트림릿 UI에서도 오류 확인됨: {content}")
                             finished = True
                             
@@ -844,8 +868,7 @@ if active_servers and static_enabled and vulnerability_categories:
             except Exception as e:
                 error_msg = f"실행 중 오류 발생: {str(e)}"
                 st.error(f"❌ {error_msg}")
-                print(f"❌ [STREAMLIT ERROR] {error_msg}")
-            
+                print(f"❌ [STREAMLIT ERROR] {error_msg}")            
             # 최종 실행 결과 요약
             st.subheader("📊 실행 결과 요약")
             result_summary = {
@@ -873,6 +896,7 @@ if active_servers and static_enabled and vulnerability_categories:
             st.session_state.inventory_path = ""
             st.session_state.playbook_tasks = []
             st.session_state.selected_checks = {}
+            st.session_state.result_folder_path= ""
             st.rerun()    
     st.markdown("---")
 
