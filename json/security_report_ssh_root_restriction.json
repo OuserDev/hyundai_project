@@ -1,0 +1,11 @@
+{
+    "config_file_exists": true,
+    "config_file_path": "/etc/ssh/sshd_config",
+    "diagnosis_result": "\uc591\ud638",
+    "hostname": "local",
+    "is_vulnerable": false,
+    "playbook_name": "1_1_1_disable_root_ssh.yml",
+    "remediation_tasks_performed": [],
+    "task_description": "Root \uacc4\uc815 SSH \uc6d0\uaca9 \uc811\uc18d \uc81c\ud55c",
+    "timestamp": "2025-06-17T07:36:20Z"
+}
