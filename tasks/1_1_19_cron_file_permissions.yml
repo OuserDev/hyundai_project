@@ -1,0 +1,121 @@
+---
+- name: 진단 및 조치 - cron 관련 파일 소유자 및 권한 설정
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 파일 목록 ---
+    target_files:
+      - "/etc/crontab"
+      - "/etc/cron.allow"
+      - "/etc/cron.deny"
+
+    # --- 설정 목표 ---
+    required_owner: "root"
+    required_group: "root"
+    required_mode: "0640"  # 스크린샷 기준 640
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_19_cron_file_permissions.yml"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 점검 대상 파일들의 현재 상태를 확인
+    - name: cron 관련 파일들의 현재 상태 확인
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ target_files }}"
+      register: file_status_list
+
+    # 취약한 파일 목록 생성
+    - name: 취약 파일 목록 생성
+      ansible.builtin.set_fact:
+        vulnerable_files: >-
+          {%- set v_files = [] -%}
+          {%- for item in file_status_list.results -%}
+            {%- if item.stat.exists -%}
+              {%- set is_owner_vuln = item.stat.pw_name != required_owner or item.stat.gr_name != required_group -%}
+              {%- set is_perm_vuln = (item.stat.mode | int(base=8)) > (required_mode | int(base=8)) -%}
+              {%- if is_owner_vuln or is_perm_vuln -%}
+                {%- set _ = v_files.append({'path': item.item, 'owner': item.stat.pw_name, 'group': item.stat.gr_name, 'mode': item.stat.mode}) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ v_files }}
+
+    # 최종 취약 여부 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ vulnerable_files | length > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (취약 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성
+    - name: 초기 JSON 보고서 생성
+      ansible.builtin.set_fact:
+        current_report_data:
+          playbook_name: "{{ playbook_name }}"
+          task_description: "cron 관련 파일 소유자 및 권한 설정"
+          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
+          is_vulnerable: "{{ is_vulnerable }}"
+          timestamp: "{{ report_timestamp }}"
+          hostname: "{{ inventory_hostname }}"
+          vulnerability_details:
+            reason: "{% if is_vulnerable %}일부 cron 관련 파일의 소유자 또는 권한이 보안 기준을 충족하지 않습니다.{% else %}모든 cron 관련 파일의 소유자 및 권한이 양호합니다.{% endif %}"
+            vulnerable_files_found: "{{ vulnerable_files }}"
+          remediation_tasks_performed: []
+
+    # 초기 JSON 보고서 파일로 저장
+    - name: 초기 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    # 취약점으로 진단된 파일들의 소유자와 권한을 올바르게 변경
+    - name: 취약한 파일 소유자 및 권한 조치
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "{{ required_owner }}"
+        group: "{{ required_group }}"
+        mode: "{{ required_mode }}"
+      loop: "{{ vulnerable_files }}"
+      register: file_remediation
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ file_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['소유자/권한 변경'] if file_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if remediation_done | default(false) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode and is_vulnerable

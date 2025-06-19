@@ -1,0 +1,113 @@
+---
+- name: 진단 및 조치 - 접근 IP 및 포트 제한 (TCP Wrappers)
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 설정 목표 ---
+    hosts_deny_file: "/etc/hosts.deny"
+    required_deny_rule: "ALL: ALL"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_18_ip_port_restriction.yml"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # /etc/hosts.deny 파일에 'ALL: ALL' 규칙이 있는지 확인
+    - name: /etc/hosts.deny 파일의 'ALL ALL' 규칙 존재 여부 진단
+      ansible.builtin.shell: "grep -qE '^\\s*ALL\\s*:\\s*ALL\\s*' {{ hosts_deny_file }}"
+      register: deny_rule_check
+      changed_when: false
+      failed_when: false # rc=1 (패턴 없음)은 취약 상태이므로 오류가 아님
+      ignore_errors: true # 파일이 없는 경우도 오류가 아님
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        # grep 명령어가 실패하면(rc!=0) 'ALL: ALL' 규칙이 없는 것이므로 '취약'
+        is_vulnerable: "{{ deny_rule_check.rc != 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (TCP Wrappers의 Default Deny 정책 미설정){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "접근 IP 및 포트 제한 (TCP Wrappers)",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "기본 차단 정책인 'ALL: ALL'이 /etc/hosts.deny 파일에 설정되어 있지 않습니다." if is_vulnerable else "/etc/hosts.deny 파일에 기본 차단 정책이 설정되어 있습니다.",
+                "recommendation": "/etc/hosts.allow에 허용할 특정 서비스와 IP를 등록하십시오."
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    # /etc/hosts.deny 파일에 'ALL: ALL' 규칙이 없으면 추가
+    - name: /etc/hosts.deny 파일에 ALL ALL 규칙 적용
+      ansible.builtin.lineinfile:
+        path: "{{ hosts_deny_file }}"
+        regexp: '^\s*ALL\s*:\s*ALL'
+        line: "{{ required_deny_rule }}"
+        state: present
+        create: yes
+        mode: '0644'
+        backup: yes
+      register: file_remediation
+      when: is_vulnerable
+
+    - name: 허용 목록 기반으로 /etc/hosts.allow 파일 설정
+      ansible.builtin.lineinfile:
+        path: /etc/hosts.allow
+        line: "sshd: {{ item }}"  # 예시: sshd 서비스에 대해 허용
+        state: present
+        create: yes
+        mode: '0644'
+        backup: yes
+      loop: "{{ lookup('file', '1_1_18_2_allow_list.txt').splitlines() }}"
+      when: is_vulnerable
+      register: file_remediation_allow
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ file_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['/etc/hosts.deny 파일 수정'] if file_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if remediation_done | default(false) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false

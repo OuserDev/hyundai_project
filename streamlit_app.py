@@ -375,11 +375,33 @@ if active_servers and static_enabled and vulnerability_categories:
                         msg_type, content = output_queue.get(timeout=1)
                         
                         if msg_type == 'output':
-                            displayed_logs.append(content)
-                            # 스타일링된 로그 박스로 표시 (최근 100줄 유지)
-                            log_text = '\n'.join(displayed_logs[-100:])
-                            display_text = log_text + '\n' + '─' * 50 + f' (실시간 업데이트 {len(displayed_logs)}) ' + '─' * 50
-                            output_container.code(display_text, language='bash')
+                            # 빈 줄 필터링 및 공백 정리
+                            if content and content.strip():
+                                cleaned_content = content.strip()
+                                displayed_logs.append(cleaned_content)
+                                
+                                # 스타일링된 로그 박스로 표시 (최근 100줄 유지)
+                                log_text = '\n'.join(displayed_logs[-100:])
+                                display_text = log_text + '\n' + '─' * 50 + f' (실시간 업데이트 {len(displayed_logs)}) ' + '─' * 50
+                                
+                                # 스크롤 가능한 스타일링된 컨테이너로 표시
+                                output_container.markdown(f"""
+                                <div style="
+                                    background-color: #0e1117;
+                                    border: 1px solid #262730;
+                                    border-radius: 5px;
+                                    padding: 10px;
+                                    font-family: 'Courier New', monospace;
+                                    font-size: 11px;
+                                    color: #fafafa;
+                                    max-height: 400px;
+                                    overflow-y: auto;
+                                    white-space: pre-wrap;
+                                    word-wrap: break-word;
+                                ">
+                                {display_text.replace('<', '&lt;').replace('>', '&gt;')}
+                                </div>
+                                """, unsafe_allow_html=True)
                             
                         elif msg_type == 'finished':
                             finished = True
