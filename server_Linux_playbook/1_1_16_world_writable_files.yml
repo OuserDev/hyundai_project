@@ -1,0 +1,113 @@
+---
+- name: 진단 및 조치 - World Writable 파일 점검
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 진단에서 제외할 경로 목록 ---
+    # 시스템 임시 파일 및 가상 파일시스템 등은 노이즈가 많으므로 제외
+    excluded_paths:
+      - /proc
+      - /sys
+      - /dev
+      - /run
+      - /tmp
+      - /var/tmp
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_16_world_writable_files.yml"
+    result_json_path: "/tmp/security_report_world_writable_files.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 제외 경로를 제외한 모든 영역에서 world writable 파일(-perm -002)을 검색
+    - name: World Writable 파일 검색
+      ansible.builtin.shell: |
+        find / \
+        {% for path in excluded_paths %}
+        -path {{ path }} -prune -o \
+        {% endfor %}
+        -type f -perm -002 -print 2>/dev/null
+      register: world_writable_check
+      changed_when: false
+      failed_when: false
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ world_writable_check.stdout_lines | length > 0 }}"
+        vulnerable_files: "{{ world_writable_check.stdout_lines }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (World Writable 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "World Writable 파일 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "모든 사용자가 쓰기 가능한 파일(world writable)이 발견되었습니다." if is_vulnerable else "World Writable 파일이 발견되지 않았습니다.",
+                "vulnerable_files_found": vulnerable_files,
+                "recommendation": "목록의 각 파일이 꼭 필요한지 검토하고, 불필요한 경우 'chmod o-w <파일경로>' 명령어로 권한을 제거하거나 파일을 삭제하십시오."
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치 (수동 조치 안내)
+    # 자동으로 권한을 제거하지 않고, 사용자에게 필요한 조치를 안내
+    - name: 필요한 수동 조치 안내
+      ansible.builtin.debug:
+        msg:
+          - "보안 취약점이 발견되었습니다. 아래 목록의 파일들을 수동으로 점검해야 합니다."
+          - "World Writable 파일 목록:"
+          - "{{ vulnerable_files }}"
+          - "조치 방법:"
+          - "  1. 각 파일이 모든 사용자가 쓰기 가능해야 하는 특별한 이유가 있는지 확인합니다."
+          - "  2. 불필요한 권한으로 판단되면, 'sudo chmod o-w <파일경로>' 명령어로 권한을 제거하십시오."
+          - "  3. 아예 불필요한 파일이면, 'sudo rm <파일경로>' 명령어로 삭제하는 것을 고려하십시오."
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록 (자동 조치가 없으므로 '수동 조치 필요'로 기록)
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false

@@ -1,0 +1,146 @@
+---
+- name: 진단 및 조치 - Finger 서비스 비활성화
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 ---
+    systemd_service: "finger.socket"
+    xinetd_config: "/etc/xinetd.d/finger"
+    inetd_config: "/etc/inetd.conf"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_20_disable_finger_service.yml"
+    result_json_path: "/tmp/security_report_finger_service.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 진단 2.1: systemd로 finger.socket이 활성화되어 있는지 확인
+    - name: systemd 서비스 상태 확인 (finger.socket)
+      ansible.builtin.systemd:
+        name: "{{ systemd_service }}"
+      register: systemd_check
+      ignore_errors: true # 서비스가 없으면 오류가 나므로 무시
+
+    # 진단 2.2: xinetd로 finger가 활성화되어 있는지 확인
+    - name: xinetd 설정 파일 확인 (disable = no)
+      ansible.builtin.shell: "grep -qE '^\\s*disable\\s*=\\s*no' {{ xinetd_config }}"
+      register: xinetd_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true # 파일이 없으면 오류가 나므로 무시
+
+    # 진단 2.3: inetd로 finger가 활성화되어 있는지 확인
+    - name: inetd 설정 파일 확인 (주석 해제 라인)
+      ansible.builtin.shell: "grep -qE '^\\s*finger\\s+' {{ inetd_config }}"
+      register: inetd_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true # 파일이 없으면 오류가 나므로 무시
+
+   # 개별 서비스 방식별 취약 여부 판단
+    - name: 개별 서비스 방식별 취약 여부 판단
+      ansible.builtin.set_fact:
+        is_systemd_vuln: >-
+          {{ (systemd_check.status.ActiveState == 'active') if 'status' in systemd_check and 'ActiveState' in systemd_check.status else false }}
+        is_xinetd_vuln: "{{ xinetd_check.rc == 0 if 'rc' in xinetd_check else false }}"
+        is_inetd_vuln: "{{ inetd_check.rc == 0 if 'rc' in inetd_check else false }}"
+
+    # 최종 취약 여부 종합 판단
+    - name: 최종 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ is_systemd_vuln or is_xinetd_vuln or is_inetd_vuln }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (Finger 서비스 활성화됨){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "Finger 서비스 비활성화",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "보안에 취약한 Finger 서비스가 활성화되어 있습니다." if is_vulnerable else "Finger 서비스가 비활성화되어 있거나 설치되지 않았습니다.",
+                "enabled_by": (["systemd"] if is_systemd_vuln else []) + (["xinetd"] if is_xinetd_vuln else []) + (["inetd"] if is_inetd_vuln else [])
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    # 활성화된 방식에 따라 각각 비활성화 조치 수행
+    - name: Finger 서비스 조치 블록
+      block:
+        - name: systemd 서비스 비활성화
+          ansible.builtin.systemd:
+            name: "{{ systemd_service }}"
+            enabled: no
+            state: stopped
+          when: is_systemd_vuln
+          register: r_systemd
+
+        - name: xinetd 서비스 비활성화
+          ansible.builtin.lineinfile:
+            path: "{{ xinetd_config }}"
+            regexp: '^\s*disable\s*='
+            line: '        disable         = yes'
+            backup: yes
+          when: is_xinetd_vuln
+          register: r_xinetd
+
+        - name: inetd 서비스 비활성화 (주석 처리)
+          ansible.builtin.lineinfile:
+            path: "{{ inetd_config }}"
+            regexp: '^(\s*finger\s+.*)'
+            line: '#\1'
+            backrefs: yes
+            backup: yes
+          when: is_inetd_vuln
+          register: r_inetd
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ (r_systemd.changed | default(false)) or (r_xinetd.changed | default(false)) or (r_inetd.changed | default(false)) }}"
+        remediation_tasks_performed: >-
+          {{ (['systemd 서비스 비활성화'] if r_systemd.changed | default(false) else []) +
+             (['xinetd 설정 변경'] if r_xinetd.changed | default(false) else []) +
+             (['inetd 설정 주석 처리'] if r_inetd.changed | default(false) else []) }}
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode and is_vulnerable

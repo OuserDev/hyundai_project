@@ -1,0 +1,116 @@
+---
+- name: 진단 및 조치 - /etc/passwd 파일 소유자 및 권한 설정
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 설정 목표 ---
+    target_file: "/etc/passwd"
+    required_owner: "root"
+    required_group: "root"
+    required_mode: "0644" # 8진수 권한
+
+    # --- 보고서 관련 ---
+    result_json_path: "/tmp/security_report_passwd_permissions.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # /etc/passwd 파일의 현재 소유자, 그룹, 권한 상태를 확인
+    - name: /etc/passwd 파일의 현재 상태 확인
+      ansible.builtin.stat:
+        path: "{{ target_file }}"
+      register: file_status
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        # 파일이 없거나, 소유자/그룹이 root가 아니거나, 권한이 644보다 허용 범위가 넓으면 '취약'
+        is_vulnerable: >-
+          {{ not file_status.stat.exists or
+             file_status.stat.pw_name != required_owner or
+             file_status.stat.gr_name != required_group or
+             (file_status.stat.mode | int(base=8)) > (required_mode | int(base=8)) }}
+        current_owner: "{{ file_status.stat.pw_name | default('N/A') }}"
+        current_mode: "{{ file_status.stat.mode | default('N/A') }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (현재 소유자: {{ current_owner }}, 권한: {{ current_mode }}){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성
+    - name: 초기 JSON 보고서 생성
+      ansible.builtin.set_fact:
+        current_report_data:
+          playbook_name: "1.1.8_etc_passwd_permissions.yml"
+          task_description: "/etc/passwd 파일 소유자 및 권한 설정"
+          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
+          is_vulnerable: "{{ is_vulnerable }}"
+          timestamp: "{{ report_timestamp }}"
+          hostname: "{{ inventory_hostname }}"
+          vulnerability_details:
+            reason: "{% if is_vulnerable %}{{ target_file }}의 소유자가 '{{ required_owner }}'가 아니거나 권한이 '{{ required_mode }}'보다 허용 범위가 넓습니다.{% else %}{{ target_file }}의 소유자 및 권한이 양호합니다.{% endif %}"
+            current_owner: "{{ current_owner }}"
+            current_mode: "{{ current_mode }}"
+            required_setting: "owner={{ required_owner }}, group={{ required_group }}, mode={{ required_mode }}"
+          remediation_tasks_performed: []
+
+    # 초기 JSON 보고서 파일로 저장
+    - name: 초기 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    # /etc/passwd 파일의 소유자와 권한을 올바르게 변경
+    - name: /etc/passwd 파일 소유자 및 권한 조치
+      ansible.builtin.file:
+        path: "{{ target_file }}"
+        owner: "{{ required_owner }}"
+        group: "{{ required_group }}"
+        mode: "{{ required_mode }}"
+      register: file_remediation
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ file_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['소유자/권한 변경'] if file_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    # 조치 결과를 콘솔에 출력
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료{% elif not is_vulnerable %}조치 불필요 (양호){% else %}조치 실패{% endif %}"
+      when: not ansible_check_mode
+
+    # JSON 보고서에 조치 결과 추가
+    - name: JSON 보고서에 조치 결과 추가
+      ansible.builtin.set_fact:
+        current_report_data: "{{ (lookup('file', result_json_path) | from_json) | combine({
+            'remediation_applied': remediation_done | default(false),
+            'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
+            'remediation_timestamp': report_timestamp,
+            'remediation_tasks_performed': remediation_tasks_performed
+          }, recursive=True) }}"
+      when: not ansible_check_mode and is_vulnerable
+
+    # 최종 JSON 보고서 파일 덮어쓰기
+    - name: 최종 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false
