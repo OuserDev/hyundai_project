@@ -12,7 +12,7 @@ from modules.input_utils import count_selected_checks
 
 # 페이지 설정
 st.set_page_config(
-    page_title="Ansible 기반 서버 취약점 자동 점검 시스템",
+    page_title="Askable: Ansible 기반 취약점 자동 점검 시스템",
     page_icon="🔒",
     layout="wide"
 )
