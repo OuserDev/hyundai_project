@@ -2,3 +2,4 @@ inventories/
 playbooks/
 logs/
 tasks/json/
+비교.py

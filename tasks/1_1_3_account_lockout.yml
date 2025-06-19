@@ -20,9 +20,6 @@
     package_name_debian: "libpam-modules"
     package_name_rhel: "pam"
 
-    # 보고서 경로
-    result_json_path: "/tmp/security_report_account_lockout.json"
-
   tasks:
     # 2. 진단
     # OS 계열에 따라 사용할 변수 설정
@@ -84,6 +81,8 @@
         content: "{{ current_report_data | to_nice_json }}"
         dest: "{{ result_json_path }}"
         mode: '0644'
+      delegate_to: localhost
+      become: false
 
     # 4. 조치
     - name: 계정 잠금 정책 조치 블록
@@ -197,3 +196,5 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       when: is_vulnerable and not ansible_check_mode
+      delegate_to: localhost
+      become: false
