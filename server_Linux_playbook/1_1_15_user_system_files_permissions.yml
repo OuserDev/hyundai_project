@@ -1,0 +1,151 @@
+---
+- name: 진단 및 조치 - 사용자 및 시스템 시작파일 권한 설정
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 파일 목록 ---
+    system_startup_files:
+      - "/etc/profile"
+      - "/etc/bash.bashrc"
+    user_startup_files:
+      - ".profile"
+      - ".bash_profile"
+      - ".bashrc"
+      - ".kshrc"
+      - ".cshrc"
+      - ".tcshrc"
+      - ".login"
+      - ".logout"
+      - ".bash_logout"
+
+    # --- 설정 목표 ---
+    required_mode: "0644"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_15_user_system_files_permissions.yml"
+    result_json_path: "/tmp/security_report_user_system_files_permissions.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 일반 사용자 목록(UID 1000 이상, 로그인 셸 보유) 가져오기
+    - name: 일반 사용자 목록 가져오기
+      ansible.builtin.getent:
+        database: passwd
+      register: all_users_info
+
+    - name: 일반 사용자 필터링
+      ansible.builtin.set_fact:
+        regular_users: "{{ result_string | from_yaml }}"
+      vars:
+        result_string: |
+          {% set users = [] %}
+          {% for username, data in (all_users_info.ansible_facts.getent_passwd | default({})).items() %}
+            {# UID(data[1])를 숫자로 변환(int)하여 1000 이상인지, 셸이 유효한지 확인 #}
+            {% if data[1] | int >= 1000 and data[5] is not in ['/usr/sbin/nologin', '/bin/false'] %}
+              {% set _ = users.append({'name': username, 'home': data[4]}) %}
+            {% endif %}
+          {% endfor %}
+          {{ users }}
+
+    # 시스템 전역 및 각 사용자별 설정 파일 상태 확인
+    - name: 모든 점검 대상 파일의 현재 상태 확인
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: >-
+        {{ system_startup_files +
+          (regular_users | map(attribute='home') | product(user_startup_files) | map('join', '/') | list) }}
+      register: file_status_list
+
+    # 취약한 파일 목록 생성
+    - name: 취약 파일 목록 생성
+      ansible.builtin.set_fact:
+        vulnerable_files: >-
+          {%- set v_files = [] -%}
+          {%- for item in file_status_list.results -%}
+            {%- if item.stat.exists -%}
+              {# 파일 경로에서 홈 디렉터리 소유자 이름을 추출합니다. 예: /home/student/.profile -> student #}
+              {%- set home_dir_owner_name = item.item | dirname | basename -%}
+              
+              {# 시스템 파일은 root 소유여야 하고, 사용자 파일은 해당 사용자 또는 root 소유여야 합니다. #}
+              {%- set is_owner_vuln = (item.item in system_startup_files and item.stat.pw_name != 'root') or
+                                     (item.item not in system_startup_files and item.stat.pw_name != home_dir_owner_name and item.stat.pw_name != 'root') -%}
+              
+              {# 권한이 644보다 허용 범위가 넓은지 확인합니다. #}
+              {%- set is_perm_vuln = (item.stat.mode | int(base=8)) > (required_mode | int(base=8)) -%}
+
+              {%- if is_owner_vuln or is_perm_vuln -%}
+                {%- set _ = v_files.append({'path': item.item, 'owner': item.stat.pw_name, 'mode': item.stat.mode}) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ v_files }}
+
+    # 최종 취약 여부 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ vulnerable_files | length > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (취약 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "사용자 및 시스템 시작파일 권한 설정",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "일부 시작 파일의 소유자 또는 권한이 보안 기준을 충족하지 않습니다." if is_vulnerable else "모든 시작 파일의 소유자 및 권한이 양호합니다.",
+                "vulnerable_files_found": vulnerable_files
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+
+    # 4. 조치
+    # 취약점으로 진단된 파일들의 소유자와 권한을 올바르게 변경
+    - name: 취약한 파일 소유자 및 권한 조치
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "{{ 'root' if item.path in system_startup_files else (item.path | dirname | basename) }}"
+        group: "{{ 'root' if item.path in system_startup_files else (item.path | dirname | basename) }}"
+        mode: "{{ required_mode }}"
+      loop: "{{ vulnerable_files }}"
+      register: file_remediation
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ file_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['소유자/권한 변경'] if file_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if remediation_done | default(false) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
