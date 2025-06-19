@@ -3,3 +3,6 @@ playbooks/
 logs/
 tasks/json/
 비교.py
+__pycache__/
+*.pyo
+*.pyc
