@@ -1,0 +1,90 @@
+---
+- name: 진단 및 조치 - automountd 서비스 비활성화
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    service_name: "autofs"
+    playbook_name: "1_1_26_automountd_disable.yml"
+    result_json_path: "/tmp/security_report_automountd_disable.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # [최종 수정] systemctl 명령어로 서비스의 실제 활성화/실행 상태를 직접 확인
+    - name: autofs 서비스 실행 상태(active) 확인
+      ansible.builtin.command: "systemctl is-active {{ service_name }}"
+      register: active_check
+      failed_when: false
+      changed_when: false
+
+    - name: autofs 서비스 활성화 상태(enabled) 확인
+      ansible.builtin.command: "systemctl is-enabled {{ service_name }}"
+      register: enabled_check
+      failed_when: false
+      changed_when: false
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        # 서비스가 active 또는 enabled 상태일 경우 '취약'
+        is_vulnerable: "{{ active_check.stdout == 'active' or enabled_check.stdout == 'enabled' }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (automountd 서비스 활성화됨){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "automountd 서비스 비활성화",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    - name: autofs 서비스 비활성화 및 중지
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: no
+        state: stopped
+      register: service_remediation
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ service_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['autofs 서비스 비활성화/중지'] if service_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode and is_vulnerable
