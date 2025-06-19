@@ -30,48 +30,63 @@ def load_json_config(filename):
         st.error(f"❌ {filename} 파일 형식이 올바르지 않습니다.")
         return {}
 
-def save_generated_playbook(active_servers, playbook_tasks):
-    """생성된 플레이북을 파일로 저장"""
+def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
+    """생성된 플레이북을 파일로 저장 (변수 전달 방식으로 개선)"""
     
-    # 메인 플레이북 구조 생성 (import_playbook 방식)
+    # 결과 디렉토리를 미리 생성 (Streamlit에서)
+    results_dir = os.path.join(result_folder_path, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    print(f"📁 결과 디렉토리 미리 생성: {results_dir}")
+    
+    # 메인 플레이북 구조 생성 (디렉토리 생성 태스크 제거)
     playbook_content = []
     
-    # 첫 번째 플레이: 기본 설정
+    # 첫 번째 플레이: 초기 설정 (디렉토리 생성 없이)
     main_play = {
         'name': 'KISA Security Vulnerability Check',
         'hosts': 'target_servers',
-        'become': True
+        'become': True,
+        'gather_facts': True,
+        'vars': {
+            'result_directory': f"{result_folder_path}/results",
+            'execution_timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
+        }
     }
     playbook_content.append(main_play)
     
-    # import_playbook들 추가
-    for task in playbook_tasks:
-        task_name = task.replace('    - import_tasks: ', '')
+    # import_playbook들 추가 (변수 전달)
+    for task_file in playbook_tasks:
+        # 태스크 코드 추출 (파일명에서)
+        task_code = task_file.replace('.yml', '')
+        
         import_entry = {
-            'import_playbook': "../tasks/" + task_name
+            'import_playbook': f"../../tasks/{task_file}",
+            'vars': {
+                'result_json_path': f"{os.path.abspath(result_folder_path)}/results/{task_code}_{{{{ inventory_hostname }}}}.json"
+            }
         }
         playbook_content.append(import_entry)
     
     # 파일명 생성 (타임스탬프 포함)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"security_check_{timestamp}.yml"
-    filepath = os.path.join("playbooks", filename)
-    
-    # 디렉터리 생성
-    os.makedirs("playbooks", exist_ok=True)
-    
-    # 결과 저장용 폴더 생성
-    result_folder_name = f"playbook_result_{timestamp}"
-    result_folder_path = os.path.join("playbooks", result_folder_name)
-    os.makedirs(result_folder_path, exist_ok=True)
+    filepath = os.path.join(result_folder_path, filename)
     
     # YAML 파일로 저장
     with open(filepath, 'w', encoding='utf-8') as f:
-        yaml.dump(playbook_content, f, default_flow_style=False, allow_unicode=True)
+        yaml.dump(playbook_content, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     
-    return filepath, filename, result_folder_path
+    # 백엔드 콘솔에 생성된 플레이북 내용 출력
+    print(f"\n{'='*80}")
+    print(f"📝 생성된 메인 플레이북 내용:")
+    print(f"{'='*80}")
+    with open(filepath, 'r', encoding='utf-8') as f:
+        print(f.read())
+    print(f"{'='*80}\n")
+    
+    return filepath, filename
 
-def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
+def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_folder_path):
     """백엔드에서 Ansible 플레이북 실행"""
     
     # 로그 파일 경로 생성
@@ -87,7 +102,7 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
         'ansible-playbook',
         '-i', inventory_path,
         playbook_path,
-        '--limit', ','.join(limit_hosts),
+        '--limit', 'target_servers',  # 메인 플레이북에서 target_servers 그룹 사용
         '-v'
     ]
     
@@ -98,8 +113,9 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
     print(f"📝 명령어: {' '.join(cmd)}")
     print(f"📂 플레이북: {playbook_path}")
     print(f"📋 인벤토리: {inventory_path}")
-    print(f"🎯 대상 서버: {', '.join(limit_hosts)}")
+    print(f"🎯 대상 그룹: target_servers")
     print(f"📄 로그 파일: {log_path}")
+    print(f"📁 결과 저장 폴더: {result_folder_path}/results")
     print(f"{'='*80}\n")
     
     # 실행 결과를 담을 큐
@@ -116,7 +132,8 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
                 f"명령어: {' '.join(cmd)}",
                 f"플레이북: {playbook_path}",
                 f"인벤토리: {inventory_path}",
-                f"대상 서버: {', '.join(limit_hosts)}",
+                f"대상 그룹: target_servers",
+                f"결과 저장: {result_folder_path}/results",
                 f"{'='*50}",
                 ""
             ]
@@ -127,7 +144,8 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                cwd=os.getcwd()  # 현재 작업 디렉토리 명시적으로 설정
             )
             
             # 실시간 출력 수집 및 백엔드 콘솔 출력
@@ -164,6 +182,7 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
             print(f"\n{'='*80}")
             if return_code == 0:
                 print(f"✅ ANSIBLE PLAYBOOK 실행 완료 (종료 코드: {return_code})")
+                print(f"📁 결과 파일들이 다음 위치에 저장되었습니다: {result_folder_path}/results/")
             else:
                 print(f"❌ ANSIBLE PLAYBOOK 실행 실패 (종료 코드: {return_code})")
             print(f"{'='*80}\n")
@@ -192,14 +211,11 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts):
     
     return output_queue, thread
 
-def save_inventory_file(servers_info, selected_servers=None):
+def save_inventory_file(servers_info, selected_servers, result_folder_path):
     """서버 정보를 inventory 파일로 저장 (선택된 서버들을 target_servers 그룹으로 설정)"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     inventory_filename = f"inventory_{timestamp}.ini"
-    inventory_path = os.path.join("inventories", inventory_filename)
-    
-    # 디렉터리 생성
-    os.makedirs("inventories", exist_ok=True)
+    inventory_path = os.path.join(result_folder_path, inventory_filename)
     
     print(f"\n=== INVENTORY 파일 생성 ===")
     print(f"파일 경로: {inventory_path}")
@@ -208,7 +224,7 @@ def save_inventory_file(servers_info, selected_servers=None):
     inventory_content = []
     groups = {}
     
-    # 선택된 서버들만 필터링 (선택된 서버가 있을 때만)
+    # 선택된 서버들만 필터링
     if selected_servers:
         filtered_servers_info = {name: info for name, info in servers_info.items() if name in selected_servers}
         print(f"필터링된 서버들: {list(filtered_servers_info.keys())}")
@@ -223,7 +239,7 @@ def save_inventory_file(servers_info, selected_servers=None):
             groups[group] = []
         groups[group].append((server_name, info))
     
-    # 실제 [all:vars]에 있던 변수들만 구분 (전역 변수)
+    # 전역 변수와 개별 변수 구분
     true_global_vars = {}
     server_specific_vars = set()
     
@@ -231,7 +247,6 @@ def save_inventory_file(servers_info, selected_servers=None):
     for server_name, info in filtered_servers_info.items():
         ansible_vars = info.get('ansible_vars', {})
         for var_name in ansible_vars.keys():
-            # 개별 서버에서 정의된 변수들은 server_specific으로 간주
             if var_name in ['ansible_host', 'ansible_port', 'ansible_user', 'ansible_connection', 'ansible_become_pass']:
                 server_specific_vars.add(var_name)
     
@@ -713,6 +728,7 @@ elif static_enabled and not active_servers:
     st.info("📋 대상 서버를 선택하면 해당 서버의 취약점 점검 항목을 설정할 수 있습니다.")
 
 st.markdown("---")
+
 # 실행 버튼 및 상태
 st.header("🚀 Ansible 플레이북 실행")
 
@@ -727,6 +743,8 @@ if 'playbook_tasks' not in st.session_state:
     st.session_state.playbook_tasks = []
 if 'selected_checks' not in st.session_state:
     st.session_state.selected_checks = {}
+if 'result_folder_path' not in st.session_state:
+    st.session_state.result_folder_path = ""
 
 if active_servers and static_enabled and vulnerability_categories:
     # 취약점 점검 시작 버튼
@@ -734,6 +752,13 @@ if active_servers and static_enabled and vulnerability_categories:
         if st.button("🔍 취약점 점검 시작", type="primary", use_container_width=True):
             # 플레이북 생성 및 저장
             with st.spinner("Ansible 플레이북 동적 생성 중..."):
+                # 타임스탬프로 결과 폴더 생성
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                result_folder_name = f"playbook_result_{timestamp}"
+                result_folder_path = os.path.join("playbooks", result_folder_name)
+                os.makedirs(result_folder_path, exist_ok=True)
+                os.makedirs(os.path.join(result_folder_path, "results"), exist_ok=True)  # 결과 하위 폴더도 미리 생성
+                
                 # 선택된 점검 항목에 따른 플레이북 태스크 생성
                 playbook_tasks = generate_playbook_tasks(selected_checks) if 'selected_checks' in locals() else []
                 
@@ -743,21 +768,23 @@ if active_servers and static_enabled and vulnerability_categories:
                 print(f"{'='*80}")
                 print(f"🎯 대상 서버: {active_servers}")
                 print(f"📋 선택된 점검 항목: {len(playbook_tasks)}개")
+                print(f"📁 결과 폴더: {result_folder_path}")
                 if playbook_tasks:
                     print("📄 포함될 파일들:")
                     for i, task in enumerate(playbook_tasks, 1):
                         print(f"   {i}. {task}")
                 print(f"{'='*80}")
                 
-                # 플레이북 파일로 저장
-                playbook_path, playbook_filename, result_folder_path = save_generated_playbook(active_servers, playbook_tasks)
+                # 플레이북 파일로 저장 (개선된 방식)
+                playbook_path, playbook_filename = save_generated_playbook(active_servers, playbook_tasks, result_folder_path)
                 
-                # inventory 파일 저장
-                inventory_path = save_inventory_file(servers_info)
+                # inventory 파일 저장 (결과 폴더 내에)
+                inventory_path = save_inventory_file(servers_info, active_servers, result_folder_path)
                 
                 # 백엔드 콘솔에 저장 완료 메시지
                 print(f"✅ 플레이북 저장 완료: {playbook_path}")
                 print(f"✅ 인벤토리 저장 완료: {inventory_path}")
+                print(f"📁 결과가 저장될 위치: {result_folder_path}/results/")
                 print(f"{'='*80}\n")
                 
                 # 세션 상태에 저장
@@ -766,7 +793,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 st.session_state.inventory_path = inventory_path
                 st.session_state.playbook_tasks = playbook_tasks
                 st.session_state.selected_checks = selected_checks if 'selected_checks' in locals() else {}
-                st.session_state.result_folder_path = result_folder_path  # 결과 폴더 경로 추가
+                st.session_state.result_folder_path = result_folder_path
                 
                 time.sleep(1)
                 
@@ -788,7 +815,7 @@ if active_servers and static_enabled and vulnerability_categories:
             "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
             "저장 경로": st.session_state.playbook_path,
             "inventory 파일": st.session_state.inventory_path,
-            "결과 저장 폴더": st.session_state.result_folder_path,  # 결과 폴더 정보 추가
+            "결과 저장 폴더": f"{st.session_state.result_folder_path}/results/",
             "생성 시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "예상 소요 시간": f"{len(active_servers) * 3}분"
         }
@@ -816,7 +843,8 @@ if active_servers and static_enabled and vulnerability_categories:
                 output_queue, thread = execute_ansible_playbook(
                     st.session_state.playbook_path, 
                     st.session_state.inventory_path, 
-                    active_servers
+                    active_servers,
+                    st.session_state.result_folder_path
                 )
                 
                 # 로그 파일 정보 표시
@@ -847,15 +875,14 @@ if active_servers and static_enabled and vulnerability_categories:
                             if content == 0:
                                 st.success("🎉 Ansible 플레이북 실행 완료!")
                                 st.success(f"📄 전체 실행 로그가 `logs/{log_filename}`에 저장되었습니다.")
+                                st.success(f"📁 점검 결과 파일들이 `{st.session_state.result_folder_path}/results/`에 저장되었습니다.")
                                 print("🎉 스트림릿 UI에서도 실행 완료 확인됨")
                             else:
                                 st.error(f"❌ 실행 실패 (종료 코드: {content})")
-                                st.info(f"📄 에러 로그가 `logs/{log_filename}`에 저장되었습니다.")
                                 print(f"❌ 스트림릿 UI에서도 실행 실패 확인됨 (코드: {content})")
                                 
                         elif msg_type == 'error':
                             st.error(f"❌ 실행 오류: {content}")
-                            st.info(f"📄 에러 로그가 `logs/{log_filename}`에 저장되었습니다.")
                             print(f"❌ 스트림릿 UI에서도 오류 확인됨: {content}")
                             finished = True
                             
@@ -868,7 +895,8 @@ if active_servers and static_enabled and vulnerability_categories:
             except Exception as e:
                 error_msg = f"실행 중 오류 발생: {str(e)}"
                 st.error(f"❌ {error_msg}")
-                print(f"❌ [STREAMLIT ERROR] {error_msg}")            
+                print(f"❌ [STREAMLIT ERROR] {error_msg}")
+            
             # 최종 실행 결과 요약
             st.subheader("📊 실행 결과 요약")
             result_summary = {
@@ -896,7 +924,7 @@ if active_servers and static_enabled and vulnerability_categories:
             st.session_state.inventory_path = ""
             st.session_state.playbook_tasks = []
             st.session_state.selected_checks = {}
-            st.session_state.result_folder_path= ""
+            st.session_state.result_folder_path = ""
             st.rerun()    
     st.markdown("---")
 
