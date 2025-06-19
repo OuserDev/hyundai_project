@@ -1,0 +1,15 @@
+---
+- name: Deploy website with apache2, php, mysql
+  hosts: PostWebServers
+  become: yes
+  vars:
+    mysql_root_password: "TESTpw1234"
+    db_name: "website_db"
+    db_user: "webuser"
+    db_password: "TESTpw1234"
+    
+    site_name: "TestSite.local"
+    document_path: "/var/www/html/testSite"
+    
+    php_version: "8.1"
+    

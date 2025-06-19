@@ -1,0 +1,115 @@
+---
+- name: install mysql
+  apt: 
+    name:
+      - mysql-server
+      - python3-pymysql
+    state: present
+  
+- name: Mysql 서비스 시작 및 활성화
+  systemd:
+    name: mysql
+    state: started
+    enabled: yes
+
+# MySQL 보안 설정을 위한 스크립트 실행
+- name: Run MySQL secure installation equivalent
+  shell: |
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{{ mysql_root_password }}';"
+    mysql -e "DELETE FROM mysql.user WHERE User='';"
+    mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+    mysql -e "DROP DATABASE IF EXISTS test;"
+    mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+    mysql -e "FLUSH PRIVILEGES;"
+  ignore_errors: yes
+
+# .my.cnf 파일 생성
+- name: Create .my.cnf file for root
+  copy:
+    content: |
+      [client]
+      user=root
+      password={{ mysql_root_password }}
+    dest: /root/.my.cnf
+    owner: root
+    group: root
+    mode: '0600'
+
+# 연결 테스트
+- name: Test MySQL connection with new password
+  command: mysql -e "SELECT 1"
+  register: mysql_connection_test
+  failed_when: mysql_connection_test.rc != 0
+
+# MySQL이 모든 인터페이스에서 연결을 허용하도록 설정
+- name: Configure MySQL to bind to all addresses
+  lineinfile:
+    path: /etc/mysql/mysql.conf.d/mysqld.cnf
+    regexp: '^bind-address'
+    line: 'bind-address = 0.0.0.0'
+    backup: yes
+  register: mysql_config_changed
+
+# MySQL 서비스 재시작 (설정이 변경된 경우에만)
+- name: Restart MySQL service if config changed
+  systemd:
+    name: mysql
+    state: restarted
+  when: mysql_config_changed.changed
+
+# 외부 접속용 root 사용자 생성 (보안상 별도 사용자 권장)
+- name: Create root user for remote access
+  mysql_user:
+    name: root
+    password: "{{ mysql_root_password }}"
+    host: '%'
+    priv: '*.*:ALL,GRANT'
+    state: present
+
+# 또는 별도의 원격 접속용 사용자 생성 (더 안전함)
+- name: Create remote access user
+  mysql_user:
+    name: "remote_admin"
+    password: "{{ mysql_root_password }}"
+    host: '%'
+    priv: '*.*:ALL'
+    state: present
+
+# MySQL 포트 방화벽 허용
+- name: Allow MySQL port through firewall
+  ufw:
+    rule: allow
+    port: '3306'
+    proto: tcp
+
+- name: Create Database
+  mysql_db:
+    name: "{{ mysql_database }}"
+    state: present
+
+- name: 애플리케이션 MySQL 사용자 생성
+  mysql_user:
+    name: "{{ mysql_user }}"
+    password: "{{ mysql_password }}"
+    priv: "{{ mysql_database }}.*:ALL"
+    state: present
+
+# schema.sql 파일을 임시 디렉토리로 복사
+- name: Copy schema.sql to temporary directory
+  copy:
+    src: "files/schema.sql"
+    dest: "/tmp/schema.sql"
+    mode: '0644'
+
+# 데이터베이스 테이블 생성
+- name: 데이터베이스 테이블 생성
+  mysql_db:
+    name: "{{ mysql_database }}"
+    state: import
+    target: "/tmp/schema.sql"
+
+# 임시 파일 정리
+- name: Remove temporary schema file
+  file:
+    path: "/tmp/schema.sql"
+    state: absent

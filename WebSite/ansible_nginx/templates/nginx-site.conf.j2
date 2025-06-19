@@ -1,0 +1,133 @@
+server {
+    listen 80;
+    {% if app_domain == 'localhost' %}
+    server_name localhost;
+    {% else %}
+    server_name {{ app_domain }} www.{{ app_domain }};
+    {% endif %}
+    
+    root {{ app_directory }};
+    index index.php index.html index.htm;
+    
+    # 보안 헤더
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    
+    # 로그 설정
+    access_log /var/log/nginx/{{ app_domain }}_access.log;
+    error_log /var/log/nginx/{{ app_domain }}_error.log;
+    
+    # 메인 location 블록
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+    
+    # PHP 파일 처리
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php{{ php_version }}-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+        
+        # PHP 설정
+        fastcgi_read_timeout 300;
+        fastcgi_buffer_size 128k;
+        fastcgi_buffers 4 256k;
+        fastcgi_busy_buffers_size 256k;
+    }
+    
+    # X-Accel-Redirect를 위한 internal location
+    location /internal/ {
+        internal;
+        alias {{ app_directory }}/;
+        
+        # 보안을 위해 PHP 파일 실행 금지
+        location ~ \.php$ {
+            deny all;
+        }
+    }
+    
+    # 업로드 디렉토리 보안 설정
+    location ~* ^/uploads/.*\.(php|php3|php4|php5|phtml|pl|py|jsp|asp|sh|cgi)$ {
+        deny all;
+        return 403;
+    }
+    
+    # 파일 다운로드 보안 강화 - 직접 접근 금지
+    location ~ ^/uploads/files/.*$ {
+        deny all;
+    }
+    
+    # 이미지는 직접 접근 허용하되 보안 강화
+    location ~ ^/uploads/images/.*\.(jpg|jpeg|png|gif|webp)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff;
+        access_log off;
+        
+        # Hotlinking 방지 (선택사항)
+        {% if app_domain != 'localhost' %}
+        valid_referers none blocked server_names {{ app_domain }} *.{{ app_domain }};
+        if ($invalid_referer) {
+            return 403;
+        }
+        {% endif %}
+    }
+    
+    location /uploads/ {
+        location ~ \.php$ {
+            deny all;
+            return 403;
+        }
+    }
+    
+    # 정적 파일 캐싱
+    location ~* \.(css|js|ico|png|jpg|jpeg|gif|webp|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+    
+    # 숨김 파일 및 디렉토리 차단
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+    
+    # 백업 파일 및 기타 민감한 파일 차단
+    location ~* \.(bak|config|sql|fla|psd|ini|log|sh|inc|swp|dist)$ {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+    
+    # 클라이언트 최대 업로드 크기
+    client_max_body_size {{ php_post_max_size }};
+    
+    # 타임아웃 설정
+    client_body_timeout 60;
+    client_header_timeout 60;
+    keepalive_timeout 65;
+    send_timeout 60;
+}
+
+# HTTPS 리다이렉트 (SSL 인증서가 있는 경우)
+# server {
+#     listen 443 ssl http2;
+#     server_name {{ app_domain }}{% if app_domain != 'localhost' %} www.{{ app_domain }}{% endif %};
+#     
+#     ssl_certificate /path/to/certificate.crt;
+#     ssl_certificate_key /path/to/private.key;
+#     
+#     # SSL 설정
+#     ssl_protocols TLSv1.2 TLSv1.3;
+#     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+#     ssl_prefer_server_ciphers off;
+#     ssl_session_cache shared:SSL:10m;
+#     ssl_session_timeout 10m;
+#     
+#     # 나머지 설정은 위의 HTTP 블록과 동일
+# }

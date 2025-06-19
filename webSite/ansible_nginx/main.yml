@@ -1,0 +1,66 @@
+---
+- name: deploy PostTestSite with Nginx
+  hosts: PostWebServers
+  become: yes
+  vars_files:
+    - includes/vars.yml
+    - includes/vault.yml
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+      listen: "restart nginx"
+    
+    - name: reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+      listen: "reload nginx"
+
+    - name: restart php-fpm
+      systemd:
+        name: "php{{ php_version }}-fpm"
+        state: restarted
+      listen: "restart php-fpm"
+
+  tasks:
+    # 시스템 업데이트
+    - name: 시스템 패키지 업데이트
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: ["system"]
+
+    # PHP 설치 및 설정
+    - name: PHP 설치 및 설정
+      include_tasks: playbooks/php.yml
+      tags: ["php"]
+      
+    # Nginx 설치 및 설정
+    - name: Nginx 설치 및 설정
+      include_tasks: playbooks/nginx.yml
+      tags: ["nginx"]
+
+    # MySQL 설치 및 설정  
+    - name: MySQL 설치 및 설정
+      include_tasks: playbooks/mysql.yml
+      tags: ["mysql"]
+
+    # 애플리케이션 배포
+    - name: 블로그 애플리케이션 배포
+      include_tasks: playbooks/app.yml
+      tags: ["app"]
+      
+    # 최종 서비스 확인
+    - name: 최종 서비스 상태 확인
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - nginx
+        - "php{{ php_version }}-fpm"
+        - mysql
+      tags: ["verify"]
