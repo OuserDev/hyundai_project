@@ -1,0 +1,101 @@
+---
+- name: 진단 및 조치 - /etc/services 파일 소유자 및 권한 설정
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 설정 목표 ---
+    target_file: "/etc/services"
+    required_owner: "root"
+    required_group: "root"
+    required_mode: "0644"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_13_etc_services_permissions.yml"
+    result_json_path: "/tmp/security_report_services_permissions.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # /etc/services 파일의 현재 소유자, 그룹, 권한 상태를 확인
+    - name: /etc/services 파일의 현재 상태 확인
+      ansible.builtin.stat:
+        path: "{{ target_file }}"
+      register: file_status
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: >-
+          {{ not file_status.stat.exists or
+             file_status.stat.pw_name != required_owner or
+             file_status.stat.gr_name != required_group or
+             (file_status.stat.mode | int(base=8)) > (required_mode | int(base=8)) }}
+        current_owner: "{{ file_status.stat.pw_name | default('N/A') }}"
+        current_mode: "{{ file_status.stat.mode | default('N/A') }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (현재 소유자: {{ current_owner }}, 권한: {{ current_mode }}){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "/etc/services 파일 소유자 및 권한 설정",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "소유자가 '{{ required_owner }}'가 아니거나 권한이 '{{ required_mode }}'보다 허용 범위가 넓습니다." if is_vulnerable else "소유자 및 권한이 양호합니다.",
+                "current_owner": current_owner,
+                "current_mode": current_mode
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+
+    # 4. 조치
+    # /etc/services 파일의 소유자와 권한을 올바르게 변경
+    - name: /etc/services 파일 소유자 및 권한 조치
+      ansible.builtin.file:
+        path: "{{ target_file }}"
+        owner: "{{ required_owner }}"
+        group: "{{ required_group }}"
+        mode: "{{ required_mode }}"
+      register: file_remediation
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ file_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['소유자/권한 변경'] if file_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if remediation_done | default(false) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
