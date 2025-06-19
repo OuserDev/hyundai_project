@@ -1,0 +1,90 @@
+---
+- name: 애플리케이션 디렉토리 생성
+  file:
+    path: "{{ app_directory }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: '0755'
+
+- name: 업로드 디렉토리 생성
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: '0755'
+  loop:
+    - "{{ app_directory }}/uploads"
+    - "{{ app_directory }}/uploads/images"
+    - "{{ app_directory }}/uploads/files"
+
+- name: 설정 디렉토리 생성
+  file:
+    path: "{{ app_directory }}/{{ item }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: '0755'
+  loop:
+    - config
+    - includes
+    - css
+
+- name: 업로드 디렉토리 .htaccess 파일 생성
+  copy:
+    content: |
+      php_flag engine off
+      Options -Indexes
+      Options -ExecCGI
+      AddHandler cgi-script .php .pl .py .jsp .asp .sh .cgi
+    dest: "{{ item }}/.htaccess"
+    owner: www-data
+    group: www-data
+    mode: '0644'
+  loop:
+    - "{{ app_directory }}/uploads"
+    - "{{ app_directory }}/uploads/images"
+    - "{{ app_directory }}/uploads/files"
+
+- name: 데이터베이스 설정 파일 생성
+  template:
+    src: database.php.j2
+    dest: "{{ app_directory }}/config/database.php"
+    owner: www-data
+    group: www-data
+    mode: '0644'
+
+- name: 상수 정의 파일 생성
+  template:
+    src: define.php.j2
+    dest: "{{ app_directory }}/includes/define.php"
+    owner: www-data
+    group: www-data
+    mode: '0644'
+
+- name: PHP 애플리케이션 파일들 복사
+  copy:
+    src: "{{ item }}"
+    dest: "{{ app_directory }}/"
+    owner: www-data
+    group: www-data
+    mode: '0644'
+  with_fileglob:
+    - "files/app/*.php"
+
+- name: functions.php 파일 복사
+  copy:
+    src: "files/app/includes/functions.php"
+    dest: "{{ app_directory }}/includes/functions.php"
+    owner: www-data
+    group: www-data
+    mode: '0644'
+
+- name: CSS 파일 복사
+  copy:
+    src: "files/css/style.css"
+    dest: "{{ app_directory }}/css/style.css"
+    owner: www-data
+    group: www-data
+    mode: '0644'

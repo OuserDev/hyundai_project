@@ -1,0 +1,70 @@
+---
+- name: Install Apache2
+  apt:
+    name: apache2
+    state: present
+
+- name: Run Apache2
+  systemd:
+    name: apache2
+    enabled: yes
+    state: started
+
+# PHP 모듈 상태 확인
+- name: Check PHP module status
+  command: "apache2ctl -M"
+  register: apache_modules
+  changed_when: false
+
+# PHP 모듈이 활성화되지 않은 경우에만 활성화
+- name: Enable PHP module if not already enabled
+  command: "a2enmod php{{ php_version }}"
+  when: "'php' not in apache_modules.stdout"
+  notify: restart apache2
+
+- name: Restart Apache after PHP module activation
+  systemd:
+    name: apache2
+    state: restarted
+  when: "'php' not in apache_modules.stdout"
+
+- name: Activate Apache2 modules
+  apache2_module:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - rewrite
+    - ssl
+    - headers
+
+- name: Restart Apache after module activation
+  systemd:
+    name: apache2
+    state: restarted
+
+- name: 기본사이트 비활성화
+  command: a2dissite 000-default
+  ignore_errors: yes
+
+- name: apache2 가상 호스트 설정 파일 생성
+  template:
+    src: apache-vhost.conf.j2
+    dest: "/etc/apache2/sites-available/{{ app_domain }}.conf"
+    backup: yes
+
+- name: 가상 호스트 활성화
+  command: "a2ensite {{ app_domain }}.conf"
+
+- name: Final Apache restart
+  systemd:
+    name: apache2
+    state: restarted
+
+- name: 방화벽 설정 (HTTP/HTTPS 허용)
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "80"
+    - "443"
