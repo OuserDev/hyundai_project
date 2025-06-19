@@ -104,6 +104,8 @@
         content: "{{ current_report_data | to_nice_json }}"
         dest: "{{ result_json_path }}"
         mode: '0644'
+      delegate_to: localhost
+      become: false      
 
     # --- 3. 조치 수행 ---
 
@@ -177,3 +179,5 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false

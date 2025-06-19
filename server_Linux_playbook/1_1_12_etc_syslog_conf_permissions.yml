@@ -76,6 +76,8 @@
           }}
         dest: "{{ result_json_path }}"
         mode: '0644'
+      delegate_to: localhost
+      become: false
 
     # 4. 조치
     # 취약점으로 진단된 파일들의 소유자와 권한을 올바르게 변경
@@ -112,3 +114,5 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false
