@@ -8,7 +8,7 @@ from datetime import datetime
 
 from modules.inventory_handler import parse_inventory_file, save_inventory_file
 from modules.playbook_manager import save_generated_playbook, execute_ansible_playbook, generate_task_filename, generate_playbook_tasks
-from modules.input_utils import count_selected_checks
+from modules.input_utils import count_selected_checks, parse_play_recap
 
 # 페이지 설정
 st.set_page_config(
@@ -366,6 +366,8 @@ if active_servers and static_enabled and vulnerability_categories:
                 
                 displayed_logs = []
                 finished = False
+                # 초기값 추가
+                result_summary = {"성공한 태스크": 0, "변경된 설정": 0, "실패한 태스크": 0, "접근 불가 서버": 0}  # 초기값 추가
                 
                 while not finished:
                     try:
@@ -376,10 +378,7 @@ if active_servers and static_enabled and vulnerability_categories:
                             displayed_logs.append(content)
                             # 스타일링된 로그 박스로 표시 (최근 100줄 유지)
                             log_text = '\n'.join(displayed_logs[-100:])
-                            
-                            # code 위젯을 사용하되 스크롤을 강제하기 위해 마지막에 공백 라인 추가
                             display_text = log_text + '\n' + '─' * 50 + f' (실시간 업데이트 {len(displayed_logs)}) ' + '─' * 50
-                            
                             output_container.code(display_text, language='bash')
                             
                         elif msg_type == 'finished':
@@ -389,14 +388,19 @@ if active_servers and static_enabled and vulnerability_categories:
                                 st.success(f"📄 전체 실행 로그가 `logs/{log_filename}`에 저장되었습니다.")
                                 st.success(f"📁 점검 결과 파일들이 `{st.session_state.result_folder_path}/results/`에 저장되었습니다.")
                                 print("🎉 스트림릿 UI에서도 실행 완료 확인됨")
+                                # PLAY RECAP 파싱하여 실제 결과 표시
+                                result_summary = parse_play_recap(displayed_logs)
                             else:
                                 st.error(f"❌ 실행 실패 (종료 코드: {content})")
                                 print(f"❌ 스트림릿 UI에서도 실행 실패 확인됨 (코드: {content})")
+                                # 실패해도 가능한 결과는 파싱
+                                result_summary = parse_play_recap(displayed_logs)
                                 
                         elif msg_type == 'error':
                             st.error(f"❌ 실행 오류: {content}")
                             print(f"❌ 스트림릿 UI에서도 오류 확인됨: {content}")
                             finished = True
+                            result_summary = parse_play_recap(displayed_logs)
                             
                     except queue.Empty:
                         continue
@@ -408,27 +412,57 @@ if active_servers and static_enabled and vulnerability_categories:
                 error_msg = f"실행 중 오류 발생: {str(e)}"
                 st.error(f"❌ {error_msg}")
                 print(f"❌ [STREAMLIT ERROR] {error_msg}")
-            
+                result_summary = {"성공한 태스크": 0, "변경된 설정": 0, "실패한 태스크": 0, "접근 불가 서버": 0}
+                
             # 최종 실행 결과 요약
             st.subheader("📊 실행 결과 요약")
-            result_summary = {
-                "성공한 태스크": "0개",
-                "변경된 설정": "0개", 
-                "실패한 태스크": "0개",
-                "접근 불가 서버": "0개"
-            }
-            
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("✅ 성공", result_summary["성공한 태스크"])
+                st.metric("✅ 성공", f"{result_summary['성공한 태스크']}개")
             with col2:
-                st.metric("🔄 변경", result_summary["변경된 설정"])
+                st.metric("🔄 변경", f"{result_summary['변경된 설정']}개")
             with col3:
-                st.metric("❌ 실패", result_summary["실패한 태스크"])
+                st.metric("❌ 실패", f"{result_summary['실패한 태스크']}개")
             with col4:
-                st.metric("🚫 접근불가", result_summary["접근 불가 서버"])
+                st.metric("🚫 접근불가", f"{result_summary['접근 불가 서버']}개")
+                
+            # 서버별 상세 결과 표시 (추가 기능)
+            
+            if result_summary.get("서버 상세"):
+                st.subheader("🖥️ 서버별 상세 결과")
+            
+            for server_name, stats in result_summary["서버 상세"].items():
+                with st.expander(f"📍 {server_name} 서버 결과"):
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    
+                    with col1:
+                        st.metric("성공", stats.get('ok', 0), delta=None)
+                    with col2:
+                        st.metric("변경", stats.get('changed', 0), delta=None)
+                    with col3:
+                        st.metric("실패", stats.get('failed', 0), delta=None)
+                    with col4:
+                        st.metric("접근불가", stats.get('unreachable', 0), delta=None)
+                    with col5:
+                        st.metric("건너뛴", stats.get('skipped', 0), delta=None)
+
+                    # 전체 성공률 표시 (추가 기능)
+                    if result_summary["성공한 태스크"] > 0 or result_summary["실패한 태스크"] > 0:
+                        total_tasks = result_summary["성공한 태스크"] + result_summary["실패한 태스크"]
+                        success_rate = (result_summary["성공한 태스크"] / total_tasks) * 100 if total_tasks > 0 else 0
+                        
+                        st.subheader("📈 전체 성공률")
+                        st.progress(success_rate / 100)
+                        st.write(f"**{success_rate:.1f}%** ({result_summary['성공한 태스크']}/{total_tasks} 태스크 성공)")
+
+                    # 문제가 있는 경우 경고 표시
+                    if result_summary["실패한 태스크"] > 0:
+                        st.error(f"⚠️ {result_summary['실패한 태스크']}개의 태스크가 실패했습니다. 로그를 확인해주세요.")
+
+                    if result_summary["접근 불가 서버"] > 0:
+                        st.warning(f"🔌 {result_summary['접근 불가 서버']}개의 서버에 접근할 수 없습니다. 네트워크 연결을 확인해주세요.")
         
-        
+        # 실행 후 초기화 버튼        
         if st.button("🔄 새로운 점검 시작 (현재 세션을 초기화하고 처음부터 다시)", use_container_width=True):
             # 세션 상태 초기화
             st.session_state.playbook_generated = False

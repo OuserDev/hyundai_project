@@ -3,3 +3,4 @@ playbooks/
 logs/
 tasks/json/
 비교.py
+modules/__pycache__/
