@@ -8,7 +8,7 @@ import threading
 import queue
 from datetime import datetime
 
-"""생성된 플레이북을 파일로 저장 (변수 전달 방식으로 개선)"""
+"""생성된 플레이북을 파일로 저장 (타임스탬프 반환 추가)"""
 def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     # 결과 디렉토리를 미리 생성 (Streamlit에서)
     results_dir = os.path.join(result_folder_path, "results")
@@ -44,8 +44,11 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
         }
         playbook_content.append(import_entry)
     
-    # 파일명 생성 (타임스탬프 포함)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 파일명 생성 (result_folder_path에서 타임스탬프 추출)
+    # result_folder_path 예: "playbooks/playbook_result_20250619_164159"
+    folder_name = os.path.basename(result_folder_path)
+    timestamp = folder_name.replace("playbook_result_", "")
+    
     filename = f"security_check_{timestamp}.yml"
     filepath = os.path.join(result_folder_path, filename)
     
@@ -61,12 +64,12 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
         print(f.read())
     print(f"{'='*80}\n")
     
-    return filepath, filename
+    # 타임스탬프도 함께 반환
+    return filepath, filename, timestamp
 
-"""백엔드에서 Ansible 플레이북 실행"""
-def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_folder_path):
-    # 로그 파일 경로 생성
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+"""백엔드에서 Ansible 플레이북 실행 (타임스탬프 받아서 로그명 통일)"""
+def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_folder_path, timestamp):
+    # 로그 파일 경로 생성 (플레이북과 동일한 타임스탬프 사용)
     log_filename = f"ansible_execute_log_{timestamp}.log"
     log_path = os.path.join("logs", log_filename)
     
@@ -90,7 +93,7 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
     print(f"📂 플레이북: {playbook_path}")
     print(f"📋 인벤토리: {inventory_path}")
     print(f"🎯 대상 그룹: target_servers")
-    print(f"📄 로그 파일: {log_path}")
+    print(f"📄 로그 파일: {log_path} (타임스탬프: {timestamp})")
     print(f"📁 결과 저장 폴더: {result_folder_path}/results")
     print(f"{'='*80}\n")
     
@@ -103,7 +106,7 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
         try:
             # 로그 파일 헤더 작성
             log_header = [
-                f"=== Ansible Playbook 실행 로그 ===",
+                f"=== Ansible Playbook 실행 로그 (타임스탬프 동기화: {timestamp}) ===",
                 f"실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 f"명령어: {' '.join(cmd)}",
                 f"플레이북: {playbook_path}",
@@ -141,7 +144,7 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
             return_code = process.wait()
             
             # 완료 메시지를 로그에 추가
-            completion_msg = f"실행 완료 - 종료 코드: {return_code}"
+            completion_msg = f"실행 완료 - 종료 코드: {return_code} (타임스탬프: {timestamp})"
             log_lines.append(f"\n{'='*50}")
             log_lines.append(f"[{datetime.now().strftime('%H:%M:%S')}] {completion_msg}")
             log_lines.append(f"실행 종료 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -157,10 +160,11 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
             # 백엔드 콘솔에 완료 메시지
             print(f"\n{'='*80}")
             if return_code == 0:
-                print(f"✅ ANSIBLE PLAYBOOK 실행 완료 (종료 코드: {return_code})")
+                print(f"✅ ANSIBLE PLAYBOOK 실행 완료 (종료 코드: {return_code}, 타임스탬프: {timestamp})")
                 print(f"📁 결과 파일들이 다음 위치에 저장되었습니다: {result_folder_path}/results/")
+                print(f"📄 로그: {log_path}")
             else:
-                print(f"❌ ANSIBLE PLAYBOOK 실행 실패 (종료 코드: {return_code})")
+                print(f"❌ ANSIBLE PLAYBOOK 실행 실패 (종료 코드: {return_code}, 타임스탬프: {timestamp})")
             print(f"{'='*80}\n")
             
             output_queue.put(('finished', return_code))
