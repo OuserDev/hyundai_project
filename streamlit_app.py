@@ -4,8 +4,11 @@ import json
 import time
 import os
 import queue
-from datetime import datetime
+import glob
+import re
+from datetime import datetime, timedelta
 
+from modules.history_manager import render_sidebar_with_history, show_analysis_report
 from modules.inventory_handler import parse_inventory_file, save_inventory_file
 from modules.playbook_manager import save_generated_playbook, execute_ansible_playbook, generate_task_filename, generate_playbook_tasks
 from modules.input_utils import count_selected_checks, parse_play_recap
@@ -34,22 +37,21 @@ def load_json_config(filename):
 # 설정 파일들 로드
 vulnerability_categories = load_json_config('vulnerability_categories.json')
 filename_mapping = load_json_config('filename_mapping.json')
-
+            
 # 사이드바 설정
-st.sidebar.title("🔧 Control Node")
-st.sidebar.markdown("**Ansible 플레이북 제어**")
+render_sidebar_with_history(vulnerability_categories, filename_mapping)
 
-# 설정 파일 상태 표시
-if vulnerability_categories and filename_mapping:
-    st.sidebar.success("✅ 설정 파일 로드 완료")
-else:
-    st.sidebar.error("❌ 설정 파일 로드 실패")
-    st.sidebar.text("필요한 파일:")
-    st.sidebar.text("- vulnerability_categories.json")
-    st.sidebar.text("- filename_mapping.json")
+# 쿼리 파라미터 확인해서 분석 리포트 페이지 표시할지 결정
+query_params = st.query_params
+selected_report = query_params.get("report", None)
+
+if selected_report:
+    # 분석 리포트 페이지 표시
+    show_analysis_report(selected_report)
+    st.stop()  # 메인 페이지 렌더링 중단
 
 # 메인 타이틀
-st.title("🔒 Ansible 기반 서버 취약점 자동 점검 시스템")
+st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
 
 # 시스템 구성 요소 표시
 col1, col2, col3 = st.columns(3)
@@ -288,7 +290,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 print(f"{'='*80}")
                 
                 # 플레이북 파일로 저장 (개선된 방식)
-                playbook_path, playbook_filename = save_generated_playbook(active_servers, playbook_tasks, result_folder_path)
+                playbook_path, playbook_filename, timestamp = save_generated_playbook(active_servers, playbook_tasks, result_folder_path)
                 
                 # inventory 파일 저장 (결과 폴더 내에)
                 inventory_path = save_inventory_file(servers_info, active_servers, result_folder_path)
@@ -306,7 +308,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 st.session_state.playbook_tasks = playbook_tasks
                 st.session_state.selected_checks = selected_checks if 'selected_checks' in locals() else {}
                 st.session_state.result_folder_path = result_folder_path
-                
+                st.session_state.timestamp = timestamp  # 이 라인 추가
                 time.sleep(1)
                 
                 # 페이지 새로고침
@@ -356,7 +358,8 @@ if active_servers and static_enabled and vulnerability_categories:
                     st.session_state.playbook_path, 
                     st.session_state.inventory_path, 
                     active_servers,
-                    st.session_state.result_folder_path
+                    st.session_state.result_folder_path,
+                    st.session_state.timestamp  # 타임스탬프 추가
                 )
                 
                 # 로그 파일 정보 표시
@@ -375,11 +378,33 @@ if active_servers and static_enabled and vulnerability_categories:
                         msg_type, content = output_queue.get(timeout=1)
                         
                         if msg_type == 'output':
-                            displayed_logs.append(content)
-                            # 스타일링된 로그 박스로 표시 (최근 100줄 유지)
-                            log_text = '\n'.join(displayed_logs[-100:])
-                            display_text = log_text + '\n' + '─' * 50 + f' (실시간 업데이트 {len(displayed_logs)}) ' + '─' * 50
-                            output_container.code(display_text, language='bash')
+                            # 빈 줄 필터링 및 공백 정리
+                            if content and content.strip():
+                                cleaned_content = content.strip()
+                                displayed_logs.append(cleaned_content)
+                                
+                                # 스타일링된 로그 박스로 표시 (최근 100줄 유지)
+                                log_text = '\n'.join(displayed_logs[-100:])
+                                display_text = log_text + '\n' + '─' * 50 + f' (실시간 업데이트 {len(displayed_logs)}) ' + '─' * 50
+                                
+                                # 스크롤 가능한 스타일링된 컨테이너로 표시
+                                output_container.markdown(f"""
+                                <div style="
+                                    background-color: #0e1117;
+                                    border: 1px solid #262730;
+                                    border-radius: 5px;
+                                    padding: 10px;
+                                    font-family: 'Courier New', monospace;
+                                    font-size: 11px;
+                                    color: #fafafa;
+                                    max-height: 400px;
+                                    overflow-y: auto;
+                                    white-space: pre-wrap;
+                                    word-wrap: break-word;
+                                ">
+                                {display_text.replace('<', '&lt;').replace('>', '&gt;')}
+                                </div>
+                                """, unsafe_allow_html=True)
                             
                         elif msg_type == 'finished':
                             finished = True

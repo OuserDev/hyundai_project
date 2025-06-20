@@ -1,0 +1,142 @@
+---
+- name: 진단 및 조치 - 불필요한 SUID, SGID 설정 파일 점검
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 화이트리스트: 시스템 운영에 필요하여 허용하는 SUID/SGID 파일 목록 (종합) ---
+    suid_sgid_whitelist:
+      # --- 기본 명령어 ---
+      - /bin/mount
+      - /bin/ping
+      - /bin/su
+      - /bin/umount
+      - /usr/bin/at
+      - /usr/bin/crontab
+      - /usr/bin/fusermount3
+      - /usr/bin/mount
+      - /usr/bin/ping
+      - /usr/bin/su
+      - /usr/bin/umount
+
+      # --- 패스워드 및 계정 관리 ---
+      - /usr/bin/chage
+      - /usr/bin/chfn
+      - /usr/bin/chsh
+      - /usr/bin/expiry
+      - /usr/bin/gpasswd
+      - /usr/bin/newgrp
+      - /usr/bin/passwd
+      - /usr/sbin/unix_chkpwd
+      - /usr/sbin/pam_extrausers_chkpwd
+
+      # --- 권한 상승 및 정책 ---
+      - /usr/bin/pkexec
+      - /usr/bin/sudo
+      - /usr/lib/polkit-1/polkit-agent-helper-1
+
+      # --- 시스템 헬퍼 및 데몬 ---
+      - /usr/lib/dbus-1.0/dbus-daemon-launch-helper
+      - /usr/lib/openssh/ssh-keysign
+      - /usr/lib/snapd/snap-confine
+      - /usr/lib/x86_64-linux-gnu/utempter/utempter # Debian/Ubuntu 계열
+      - /usr/libexec/utempter/utempter # RHEL/CentOS 계열
+
+      # --- 네트워킹 ---
+      - /usr/sbin/pppd
+      - /usr/sbin/usernetctl
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_14_suid_sgid_check.yml"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 시스템 전체에서 SUID 또는 SGID가 설정된 모든 파일을 검색
+    - name: SUID/SGID 설정 파일 전체 검색
+      ansible.builtin.shell: "find / -type f \\( -perm -4000 -o -perm -2000 \\) -print 2>/dev/null"
+      register: all_suid_sgid_files
+      changed_when: false
+      failed_when: false
+
+    # 화이트리스트에 없는 '의심스러운' 파일 목록 생성
+    - name: 화이트리스트와 비교하여 취약 파일 목록 생성
+      ansible.builtin.set_fact:
+        vulnerable_files: "{{ all_suid_sgid_files.stdout_lines | difference(suid_sgid_whitelist) }}"
+
+    # 최종 취약 여부 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ vulnerable_files | length > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (의심스러운 SUID/SGID 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "불필요한 SUID, SGID 설정 파일 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "시스템 운영에 불필요해 보이는 파일에 SUID 또는 SGID가 설정되어 있습니다." if is_vulnerable else "알려진 SUID/SGID 외에 의심스러운 파일이 발견되지 않았습니다.",
+                "vulnerable_files_found": vulnerable_files,
+                "recommendation": "목록의 각 파일이 꼭 필요한지 검토하고, 불필요한 경우 'chmod -s <파일경로>' 명령어로 권한을 제거하십시오."
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치 (수동 조치 안내)
+    # 자동으로 권한을 제거하지 않고, 사용자에게 필요한 조치를 안내
+    - name: 필요한 수동 조치 안내
+      ansible.builtin.debug:
+        msg:
+          - "보안 취약점이 발견되었습니다. 아래 목록의 파일들을 수동으로 점검해야 합니다."
+          - "화이트리스트에 등록되지 않은 SUID/SGID 파일 목록:"
+          - "{{ vulnerable_files }}"
+          - "조치 방법:"
+          - "  1. 각 파일이 시스템 운영 또는 특정 서비스에 꼭 필요한지 확인합니다."
+          - "  2. 불필요한 파일로 판단되면, 'sudo chmod -s <파일경로>' 명령어로 특수 권한을 제거하십시오."
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록 (자동 조치가 없으므로 '수동 조치 필요'로 기록)
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: false # 자동 조치를 수행하지 않았으므로 false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false
