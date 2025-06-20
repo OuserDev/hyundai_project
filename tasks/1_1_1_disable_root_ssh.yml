@@ -12,10 +12,6 @@
     remediation_ssh_regexp: '^#?PermitRootLogin\s+.*'
     securetty_path: "/etc/securetty"
     vulnerable_securetty_regexp: '^pts/\d+'
-    
-    # 결과 파일 경로 - 메인 플레이북에서 반드시 전달받아야 함
-    # result_json_path: (메인 플레이북에서 vars로 전달)
-    
     remediation_tasks_performed: []
 
   tasks:
@@ -108,7 +104,7 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: false
+      become: false      
 
     # --- 3. 조치 수행 ---
 
@@ -181,6 +177,6 @@
         content: "{{ current_report_data | to_nice_json }}"
         dest: "{{ result_json_path }}"
         mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
       delegate_to: localhost
       become: false
-      when: not ansible_check_mode
