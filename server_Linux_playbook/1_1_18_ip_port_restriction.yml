@@ -8,7 +8,11 @@
   vars:
     # --- 설정 목표 ---
     hosts_deny_file: "/etc/hosts.deny"
+    hosts_allow_file: "/etc/hosts.allow" # hosts.allow 파일 경로 변수 추가
     required_deny_rule: "ALL: ALL"
+    # 허용할 IP/호스트 목록 (1_1_18_2_allow_list.txt 파일에서 읽어옴)
+    # 실제 환경에서는 이 목록을 안전하게 관리해야 합니다.
+    allowed_ssh_ips: "{{ lookup('file', '1_1_18_2_allow_list.txt').splitlines() | select('match', '^(?!#).*\\S$') | list }}"
 
     # --- 보고서 관련 ---
     playbook_name: "1_1_18_ip_port_restriction.yml"
@@ -72,27 +76,50 @@
         create: yes
         mode: '0644'
         backup: yes
-      register: file_remediation
+      register: file_remediation_deny
       when: is_vulnerable
 
-    - name: 허용 목록 기반으로 /etc/hosts.allow 파일 설정
-      ansible.builtin.lineinfile:
-        path: /etc/hosts.allow
-        line: "sshd: {{ item }}"  # 예시: sshd 서비스에 대해 허용
-        state: present
-        create: yes
+    # hosts.allow 파일을 초기화 (기존 내용 삭제) - 이 태스크가 중요합니다!
+    - name: /etc/hosts.allow 파일 초기화 (기존 내용 제거)
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ hosts_allow_file }}"
+        force: yes
         mode: '0644'
-        backup: yes
-      loop: "{{ lookup('file', '1_1_18_2_allow_list.txt').splitlines() }}"
+        backup: yes # 만일을 대비하여 백업 생성
       when: is_vulnerable
+      register: hosts_allow_cleared
+
+    # 허용 목록 기반으로 /etc/hosts.allow 파일 설정
+    - name: 허용 목록 기반으로 /etc/hosts.allow 파일에 SSH 허용 IP/호스트 추가
+      ansible.builtin.lineinfile:
+        path: "{{ hosts_allow_file }}"
+        line: "sshd: {{ item }}"
+        state: present
+        create: yes # 파일이 없으면 생성
+        mode: '0644'
+        backup: no # lineinfile 자체는 백업을 하므로 굳이 여기서 다시 할 필요 없음
+      loop: "{{ allowed_ssh_ips }}" # 위에 정의한 변수 사용
+      when: is_vulnerable and allowed_ssh_ips | length > 0
       register: file_remediation_allow
 
     # 5. 조치 결과 보고
     # 수행된 조치 작업 기록
     - name: 수행된 조치 작업 기록
       ansible.builtin.set_fact:
-        remediation_done: "{{ file_remediation.changed | default(false) }}"
-        remediation_tasks_performed: "{{ ['/etc/hosts.deny 파일 수정'] if file_remediation.changed | default(false) else [] }}"
+        remediation_done: "{{ (file_remediation_deny.changed | default(false)) or (hosts_allow_cleared.changed | default(false)) or (file_remediation_allow.changed | default(false)) }}"
+        remediation_tasks_performed: >-
+          {% set performed = [] %}
+          {% if file_remediation_deny.changed | default(false) %}
+            {% set _ = performed.append('/etc/hosts.deny 파일 수정') %}
+          {% endif %}
+          {% if hosts_allow_cleared.changed | default(false) %}
+            {% set _ = performed.append('/etc/hosts.allow 파일 초기화') %}
+          {% endif %}
+          {% if file_remediation_allow.changed | default(false) %}
+            {% set _ = performed.append('/etc/hosts.allow에 SSH 허용 IP/호스트 추가') %}
+          {% endif %}
+          {{ performed }}
       when: is_vulnerable
 
     # 최종 JSON 보고서에 조치 결과 추가 및 저장
