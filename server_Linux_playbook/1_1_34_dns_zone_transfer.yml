@@ -1,0 +1,133 @@
+---
+- name: 진단 및 조치 - DNS Zone Transfer 제한 설정
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 파일 (경로는 시스템에 따라 다를 수 있음) ---
+    bind_config_files:
+      - "/etc/named.conf"
+      - "/etc/bind/named.conf"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_34_dns_zone_transfer.yml"
+    result_json_path: "/tmp/security_report_dns_zone_transfer.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # BIND (named) 프로세스 실행 여부 확인
+    - name: named 프로세스 실행 여부 확인
+      ansible.builtin.shell: "ps -ef | grep '[n]amed'"
+      register: process_check
+      changed_when: false
+      failed_when: false
+
+    # 실제 존재하는 BIND 설정 파일 경로 찾기
+    - name: BIND 설정 파일 경로 확인
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ bind_config_files }}"
+      register: config_file_stat
+
+    - name: 실제 설정 파일 경로 변수 설정
+      ansible.builtin.set_fact:
+        found_config_file: "{{ (config_file_stat.results | selectattr('stat.exists', 'equalto', true) | first).item | default('') }}"
+
+    # 설정 파일에서 'allow-transfer { any; }' 또는 allow-transfer 부재 확인
+    - name: Zone Transfer 설정 진단
+      ansible.builtin.shell: |
+        # 'allow-transfer' 설정에 'any'가 포함되어 있으면 취약 (rc=0)
+        grep -Ez "allow-transfer\s*\{[^}]*any;" "{{ found_config_file }}"
+        if [ $? -eq 0 ]; then exit 0; fi
+
+        # 'allow-transfer' 설정이 아예 없으면 취약 (rc=0)
+        # options 또는 zone 블록 안에 설정이 있는지 확인
+        if ! grep -q "allow-transfer" "{{ found_config_file }}"; then
+          exit 0
+        fi
+
+        exit 1 # 위 두 경우에 해당하지 않으면 '양호'
+      args:
+        executable: /bin/bash
+      register: zone_transfer_check
+      changed_when: false
+      failed_when: false
+      when: process_check.rc == 0 and found_config_file != ''
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        # BIND가 실행 중이고, 진단 결과가 취약(rc=0)일 경우 최종 '취약'
+        is_vulnerable: "{{ process_check.rc == 0 and zone_transfer_check.rc == 0 if zone_transfer_check is defined else false }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (DNS Zone Transfer가 모든 호스트에 허용됨){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "DNS Zone Transfer 제한",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "DNS Zone Transfer가 모든 호스트('any')에 허용되었거나, 제한 설정이 없어 기본 정책에 의해 허용될 수 있습니다." if is_vulnerable else "DNS 서비스가 실행 중이지 않거나 Zone Transfer가 특정 호스트에만 허용되도록 설정되어 있습니다.",
+                "config_file_checked": found_config_file | default('N/A')
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치 (수동 조치 안내)
+    # 자동으로 설정을 변경하지 않고, 사용자에게 필요한 조치를 안내
+    - name: 필요한 수동 조치 안내
+      ansible.builtin.debug:
+        msg:
+          - "보안 취약점이 발견되었습니다. DNS Zone Transfer 설정을 수동으로 점검해야 합니다."
+          - "점검 대상 파일: {{ found_config_file }}"
+          - "조치 권고:"
+          - "  - named.conf 파일의 options { ... }; 블록 또는 각 zone { ... }; 블록 안에 'allow-transfer' 설정을 추가하거나 수정하십시오."
+          - "  - 예시: allow-transfer { <허용할_보조_DNS_서버_IP>; };"
+          - "  - 불필요한 Zone Transfer는 완전히 비활성화하는 것을 권장합니다 (예: allow-transfer { none; };)."
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode and is_vulnerable
