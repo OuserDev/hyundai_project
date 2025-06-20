@@ -8,40 +8,17 @@
   vars:
     # --- 설정 목표 ---
     hosts_deny_file: "/etc/hosts.deny"
+    hosts_allow_file: "/etc/hosts.allow" # hosts.allow 파일 경로 변수 추가
     required_deny_rule: "ALL: ALL"
-    allow_list_file: "1_1_18_2_allow_list.txt"
+    # 허용할 IP/호스트 목록 (1_1_18_2_allow_list.txt 파일에서 읽어옴)
+    # 실제 환경에서는 이 목록을 안전하게 관리해야 합니다.
+    allowed_ssh_ips: "{{ lookup('file', '1_1_18_2_allow_list.txt').splitlines() | select('match', '^(?!#).*\\S$') | list }}"
 
     # --- 보고서 관련 ---
     playbook_name: "1_1_18_ip_port_restriction.yml"
-    result_json_path: "/tmp/security_report_ip_port_restriction.json"
     remediation_tasks_performed: []
 
   tasks:
-    # 1.5. allow_list 파일 존재 여부 확인 (Control Node에서)
-    - name: allow_list 파일 존재 여부 확인
-      ansible.builtin.stat:
-        path: "{{ allow_list_file }}"
-      register: allow_list_stat
-      delegate_to: localhost
-      become: false
-
-    - name: allow_list 파일 상태 출력
-      ansible.builtin.debug:
-        msg: |
-          파일명: {{ allow_list_file }}
-          파일 존재: {{ allow_list_stat.stat.exists }}
-          파일 경로: {{ allow_list_stat.stat.path if allow_list_stat.stat.exists else '파일 없음' }}
-          파일 크기: {{ allow_list_stat.stat.size if allow_list_stat.stat.exists else 'N/A' }}
-
-    # 1.6. allow_list 파일 내용 미리보기 (파일이 존재할 경우)
-    - name: allow_list 파일 내용 미리보기
-      ansible.builtin.debug:
-        msg: |
-          파일 내용:
-          {{ lookup('file', allow_list_file).splitlines() }}
-      when: allow_list_stat.stat.exists
-      delegate_to: localhost
-
     # 2. 진단
     # /etc/hosts.deny 파일에 'ALL: ALL' 규칙이 있는지 확인
     - name: /etc/hosts.deny 파일의 'ALL ALL' 규칙 존재 여부 진단
@@ -76,7 +53,6 @@
               "is_vulnerable": is_vulnerable,
               "timestamp": report_timestamp,
               "hostname": inventory_hostname,
-              "allow_list_file_exists": allow_list_stat.stat.exists,
               "vulnerability_details": {
                 "reason": "기본 차단 정책인 'ALL: ALL'이 /etc/hosts.deny 파일에 설정되어 있지 않습니다." if is_vulnerable else "/etc/hosts.deny 파일에 기본 차단 정책이 설정되어 있습니다.",
                 "recommendation": "/etc/hosts.allow에 허용할 특정 서비스와 IP를 등록하십시오."
@@ -99,59 +75,50 @@
         create: yes
         mode: '0644'
         backup: yes
-      register: file_remediation
+      register: file_remediation_deny
       when: is_vulnerable
 
-    # 4.5. allow_list 기반 hosts.allow 설정 (파일이 존재할 경우에만)
-    - name: 허용 목록 기반으로 /etc/hosts.allow 파일 설정
-      ansible.builtin.lineinfile:
-        path: /etc/hosts.allow
-        line: "sshd: {{ item }}"  # 예시: sshd 서비스에 대해 허용
-        state: present
-        create: yes
+    # hosts.allow 파일을 초기화 (기존 내용 삭제) - 이 태스크가 중요합니다!
+    - name: /etc/hosts.allow 파일 초기화 (기존 내용 제거)
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ hosts_allow_file }}"
+        force: yes
         mode: '0644'
-        backup: yes
-      loop: "{{ lookup('file', allow_list_file, errors='ignore').splitlines() | default([]) }}"
-      when: 
-        - is_vulnerable
-        - allow_list_stat.stat.exists
-        - lookup('file', allow_list_file, errors='ignore') != ""
+        backup: yes # 만일을 대비하여 백업 생성
+      when: is_vulnerable
+      register: hosts_allow_cleared
+
+    # 허용 목록 기반으로 /etc/hosts.allow 파일 설정
+    - name: 허용 목록 기반으로 /etc/hosts.allow 파일에 SSH 허용 IP/호스트 추가
+      ansible.builtin.lineinfile:
+        path: "{{ hosts_allow_file }}"
+        line: "sshd: {{ item }}"
+        state: present
+        create: yes # 파일이 없으면 생성
+        mode: '0644'
+        backup: no # lineinfile 자체는 백업을 하므로 굳이 여기서 다시 할 필요 없음
+      loop: "{{ allowed_ssh_ips }}" # 위에 정의한 변수 사용
+      when: is_vulnerable and allowed_ssh_ips | length > 0
       register: file_remediation_allow
-
-    # 4.6. allow_list 파일이 없거나 비어있을 경우 기본 설정 적용
-    - name: 기본 허용 설정 적용 (allow_list 파일 없음)
-      ansible.builtin.lineinfile:
-        path: /etc/hosts.allow
-        line: "sshd: 127.0.0.1, localhost"  # 기본적으로 로컬호스트만 허용
-        state: present
-        create: yes
-        mode: '0644'
-        backup: yes
-      when: 
-        - is_vulnerable
-        - not allow_list_stat.stat.exists
-      register: file_remediation_default
-
-    # 4.7. allow_list 파일 상태에 따른 메시지
-    - name: allow_list 처리 결과 메시지
-      ansible.builtin.debug:
-        msg: |
-          {% if allow_list_stat.stat.exists %}
-          ✅ {{ allow_list_file }} 파일을 사용하여 허용 목록을 설정했습니다.
-          {% else %}
-          ⚠️ {{ allow_list_file }} 파일이 없어서 기본 설정(localhost만 허용)을 적용했습니다.
-          필요시 /etc/hosts.allow 파일을 수동으로 편집하여 허용할 IP를 추가하세요.
-          {% endif %}
-      when: is_vulnerable
 
     # 5. 조치 결과 보고
     # 수행된 조치 작업 기록
     - name: 수행된 조치 작업 기록
       ansible.builtin.set_fact:
-        remediation_done: "{{ file_remediation.changed | default(false) }}"
-        remediation_tasks_performed: "{{ ['/etc/hosts.deny 파일 수정'] if file_remediation.changed | default(false) else [] }}"
-        allow_list_applied: "{{ file_remediation_allow.changed | default(false) if allow_list_stat.stat.exists else file_remediation_default.changed | default(false) }}"
-        allow_method: "{{ 'custom_list' if allow_list_stat.stat.exists else 'default_localhost' }}"
+        remediation_done: "{{ (file_remediation_deny.changed | default(false)) or (hosts_allow_cleared.changed | default(false)) or (file_remediation_allow.changed | default(false)) }}"
+        remediation_tasks_performed: >-
+          {% set performed = [] %}
+          {% if file_remediation_deny.changed | default(false) %}
+            {% set _ = performed.append('/etc/hosts.deny 파일 수정') %}
+          {% endif %}
+          {% if hosts_allow_cleared.changed | default(false) %}
+            {% set _ = performed.append('/etc/hosts.allow 파일 초기화') %}
+          {% endif %}
+          {% if file_remediation_allow.changed | default(false) %}
+            {% set _ = performed.append('/etc/hosts.allow에 SSH 허용 IP/호스트 추가') %}
+          {% endif %}
+          {{ performed }}
       when: is_vulnerable
 
     # 최종 JSON 보고서에 조치 결과 추가 및 저장
@@ -163,11 +130,7 @@
               'remediation_applied': remediation_done | default(false),
               'remediation_result': '조치 완료' if remediation_done | default(false) else '조치 실패',
               'remediation_timestamp': report_timestamp,
-              'remediation_tasks_performed': remediation_tasks_performed | default([]),
-              'allow_list_applied': allow_list_applied | default(false),
-              'allow_list_file_path': allow_list_file,
-              'allow_list_exists': allow_list_stat.stat.exists,
-              'allow_method_used': allow_method | default('none')
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
             }, recursive=True) | to_nice_json
           }}
         dest: "{{ result_json_path }}"

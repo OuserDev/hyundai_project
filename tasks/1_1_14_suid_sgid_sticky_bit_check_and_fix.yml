@@ -52,6 +52,10 @@
     playbook_name: "1_1_14_suid_sgid_check.yml"
     remediation_tasks_performed: []
 
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_14_suid_sgid_check.yml"
+    remediation_tasks_performed: []
+
   tasks:
     # 2. 진단
     # 시스템 전체에서 SUID 또는 SGID가 설정된 모든 파일을 검색
