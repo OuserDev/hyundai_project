@@ -1,6 +1,6 @@
 """
 분석 리포트 페이지 - 특정 실행 기록의 상세 분석 결과 표시
-다종/다중 서버 환경에 최적화된 리팩토링 버전
+다종/다중 서버 환경에 최적화된 리팩토링 버전 (실질적 상태 반영)
 """
 import streamlit as st
 import os
@@ -115,84 +115,226 @@ def load_timestamp_results(timestamp):
         'check_types': list(check_types)
     }, None
 
+def create_security_improvement_analysis(df):
+    """보안 개선 효과 분석 (실질적 상태 반영) - 최종 수정 버전"""
+    if df.empty:
+        return None, None, None
+        
+    # 실질적 상태가 없으면 생성
+    if '실질적_양호상태' not in df.columns:
+        df['실질적_양호상태'] = (
+            (df['전체 취약 여부'] == False) | 
+            (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))
+        )
+    
+    # 1. 원래부터 양호 (조치 불필요)
+    originally_safe = df[
+        (df['실질적_양호상태'] == True) & 
+        (df['조치 여부'] == False)
+    ]
+    
+    # 2. 조치 후 양호 (취약 발견 → 조치 완료)
+    remediated_safe = df[
+        (df['조치 여부'] == True) & 
+        (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))
+    ]
+    
+    # 3. 여전히 취약 (조치 실패 또는 미조치)
+    still_vulnerable = df[df['실질적_양호상태'] == False]
+    
+    # 통계 데이터 생성
+    improvement_stats = pd.DataFrame({
+        '항목': ['원래부터 양호', '조치 후 양호', '여전히 취약'],
+        '개수': [len(originally_safe), len(remediated_safe), len(still_vulnerable)],
+        '비율(%)': [
+            len(originally_safe) / len(df) * 100,
+            len(remediated_safe) / len(df) * 100, 
+            len(still_vulnerable) / len(df) * 100
+        ]
+    })
+    
+    # 파이 차트 생성
+    fig1 = px.pie(
+        improvement_stats,
+        values='개수',
+        names='항목',
+        title="보안 상태 분포 (실질적 상태 반영)",
+        color_discrete_map={
+            '원래부터 양호': '#28a745',      # 녹색
+            '조치 후 양호': '#17a2b8',       # 청록색  
+            '여전히 취약': '#dc3545'         # 빨간색
+        }
+    )
+    
+    # 서버별 개선 효과 차트
+    server_improvement = df.groupby('호스트').apply(lambda x: pd.Series({
+        '원래_양호': len(x[(x['실질적_양호상태'] == True) & (x['조치 여부'] == False)]),
+        '조치_후_양호': len(x[(x['조치 여부'] == True) & 
+                            (x['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))]),
+        '여전히_취약': len(x[x['실질적_양호상태'] == False])
+    })).reset_index()
+    
+    fig2 = px.bar(
+        server_improvement,
+        x='호스트',
+        y=['원래_양호', '조치_후_양호', '여전히_취약'],
+        title="서버별 보안 개선 효과 (실질적 상태)",
+        labels={'value': '항목 수', 'variable': '상태'},
+        color_discrete_map={
+            '원래_양호': '#28a745',
+            '조치_후_양호': '#17a2b8', 
+            '여전히_취약': '#dc3545'
+        }
+    )
+    fig2.update_layout(height=400)
+    
+    return fig1, fig2, {
+        'originally_safe': originally_safe,
+        'remediated_safe': remediated_safe,
+        'still_vulnerable': still_vulnerable,
+        'stats': improvement_stats
+    }
+
 def create_vulnerability_severity_chart(df):
-    """취약점 심각도별 차트 생성"""
+    """취약점 심각도별 차트 생성 (실질적 상태 반영, 조치 후 양호 구분)"""
     if df.empty:
         return None
-        
-    severity_counts = df.groupby(['전체 취약 여부', '진단 결과']).size().reset_index(name='count')
+    
+    # 실질적 상태가 없으면 생성
+    if '실질적_양호상태' not in df.columns:
+        df['실질적_양호상태'] = (
+            (df['전체 취약 여부'] == False) | 
+            (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))
+        )
+    
+    # 3단계 상태로 재분류
+    df_chart = df.copy()
+    
+    def categorize_status(row):
+        if row['실질적_양호상태'] == False:
+            return '실질적 취약'
+        elif row['조치 여부'] == True and '조치 완료' in str(row['조치 결과']):
+            return '조치 후 양호'
+        else:
+            return '원래부터 양호'
+    
+    df_chart['상세_상태'] = df_chart.apply(categorize_status, axis=1)
+    
+    severity_counts = df_chart.groupby(['상세_상태', '진단 결과']).size().reset_index(name='count')
+    
+    # 색상 매핑
+    color_map = {
+        '원래부터 양호': '#28a745',    # 녹색
+        '조치 후 양호': '#17a2b8',     # 청록색
+        '실질적 취약': '#dc3545'       # 빨간색
+    }
     
     fig = px.sunburst(
         severity_counts,
-        path=['전체 취약 여부', '진단 결과'],
+        path=['상세_상태', '진단 결과'],
         values='count',
-        title="취약점 심각도 분석",
-        color='count',
-        color_continuous_scale='RdYlGn_r'
+        title="취약점 심각도 분석 (조치 효과 구분)",
+        color='상세_상태',
+        color_discrete_map=color_map
     )
     return fig
 
 def create_server_comparison_chart(df):
-    """서버별 비교 차트"""
+    """서버별 비교 차트 (실질적 상태 반영)"""
     if df.empty:
         return None
+    
+    # 실질적 상태가 없으면 생성
+    if '실질적_양호상태' not in df.columns:
+        df['실질적_양호상태'] = (
+            (df['전체 취약 여부'] == False) | 
+            (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))
+        )
         
+    # 실질적 상태 기준으로 서버별 통계 계산
     server_stats = df.groupby('호스트').agg({
-        '전체 취약 여부': ['count', 'sum'],
+        '실질적_양호상태': ['count', lambda x: (~x).sum()],  # 전체 개수, 실질적 취약 개수
         '조치 여부': 'sum'
     }).round(2)
     
-    server_stats.columns = ['총_점검', '취약_발견', '조치_완료']
-    server_stats['양호'] = server_stats['총_점검'] - server_stats['취약_발견']
+    server_stats.columns = ['총_점검', '실질적_취약', '조치_완료']
+    server_stats['실질적_양호'] = server_stats['총_점검'] - server_stats['실질적_취약']
     server_stats = server_stats.reset_index()
+    
+    # 세부 분류 추가
+    server_details = df.groupby('호스트').apply(lambda x: pd.Series({
+        '원래_양호': len(x[(x['실질적_양호상태'] == True) & (x['조치 여부'] == False)]),
+        '조치_후_양호': len(x[(x['조치 여부'] == True) & 
+                            (x['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))]),
+        '여전히_취약': len(x[x['실질적_양호상태'] == False])
+    })).reset_index()
+    
+    # 서버 통계와 세부 분류 병합
+    server_stats = server_stats.merge(server_details, on='호스트')
     
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('서버별 취약점 현황', '조치 완료율', '취약점 분포', '서버 위험도'),
+        subplot_titles=('서버별 실질적 취약점 현황', '조치 완료율', '전체 보안 상태 분포', '보안 개선 효과'),
         specs=[[{"type": "bar"}, {"type": "bar"}],
-               [{"type": "pie"}, {"type": "scatter"}]]
+               [{"type": "pie"}, {"type": "bar"}]]
     )
     
-    # 서버별 취약점 현황
+    # 서버별 실질적 취약점 현황
     fig.add_trace(
-        go.Bar(x=server_stats['호스트'], y=server_stats['양호'], name='양호', marker_color='green'),
+        go.Bar(x=server_stats['호스트'], y=server_stats['실질적_양호'], name='실질적 양호', marker_color='green'),
         row=1, col=1
     )
     fig.add_trace(
-        go.Bar(x=server_stats['호스트'], y=server_stats['취약_발견'], name='취약', marker_color='red'),
+        go.Bar(x=server_stats['호스트'], y=server_stats['실질적_취약'], name='실질적 취약', marker_color='red'),
         row=1, col=1
     )
     
-    # 조치 완료율
-    server_stats['조치율'] = (server_stats['조치_완료'] / server_stats['취약_발견'].replace(0, 1) * 100).fillna(0)
-    fig.add_trace(
-        go.Bar(x=server_stats['호스트'], y=server_stats['조치율'], name='조치율(%)', marker_color='blue'),
-        row=1, col=2
-    )
+    # 조치 완료율 (전체 점검 대비 조치 완료된 비율)
+    # remediated_safe 계산
+    remediated_safe = df[(df['조치 여부'] == True) & 
+                        (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))]
     
-    # 전체 취약점 분포
-    total_vulnerable = server_stats['취약_발견'].sum()
-    total_safe = server_stats['양호'].sum()
+    total_items_with_action = len(df[df['조치 여부'] == True])  # 조치가 시도된 항목
+    if total_items_with_action > 0:
+        completion_rate = len(remediated_safe) / total_items_with_action * 100
+        fig.add_trace(
+            go.Bar(x=server_stats['호스트'], y=[completion_rate] * len(server_stats), name='조치 완료율(%)', marker_color='blue'),
+            row=1, col=2
+        )
+    else:
+        fig.add_trace(
+            go.Bar(x=server_stats['호스트'], y=[0] * len(server_stats), name='조치 완료율(%)', marker_color='blue'),
+            row=1, col=2
+        )
+    
+    # 전체 보안 상태 분포
+    total_safe = server_stats['실질적_양호'].sum()
+    total_vulnerable = server_stats['실질적_취약'].sum()
     fig.add_trace(
-        go.Pie(labels=['양호', '취약'], values=[total_safe, total_vulnerable], name="전체분포"),
+        go.Pie(
+            labels=['실질적 양호', '실질적 취약'], 
+            values=[total_safe, total_vulnerable], 
+            name="전체분포",
+            marker=dict(colors=['green', 'red'])  # 양호=녹색, 취약=빨간색
+        ),
         row=2, col=1
     )
     
-    # 서버 위험도 (취약점 수 vs 조치율)
+    # 보안 개선 효과 (3단계 분류)
     fig.add_trace(
-        go.Scatter(
-            x=server_stats['취약_발견'], 
-            y=server_stats['조치율'],
-            mode='markers+text',
-            text=server_stats['호스트'],
-            textposition="top center",
-            marker=dict(size=server_stats['총_점검']*2, color='orange'),
-            name='위험도'
-        ),
+        go.Bar(x=server_stats['호스트'], y=server_stats['원래_양호'], name='원래부터 양호', marker_color='#28a745'),
+        row=2, col=2
+    )
+    fig.add_trace(
+        go.Bar(x=server_stats['호스트'], y=server_stats['조치_후_양호'], name='조치 후 양호', marker_color='#17a2b8'),
+        row=2, col=2
+    )
+    fig.add_trace(
+        go.Bar(x=server_stats['호스트'], y=server_stats['여전히_취약'], name='여전히 취약', marker_color='#dc3545'),
         row=2, col=2
     )
     
-    fig.update_layout(height=800, showlegend=True, title_text="서버별 종합 보안 분석")
+    fig.update_layout(height=800, showlegend=True, title_text="서버별 종합 보안 분석 (실질적 상태 반영)")
     return fig
 
 def create_vulnerability_details_analysis(df):
@@ -276,6 +418,126 @@ def create_detailed_file_analysis(df):
     return fig
 
 def create_execution_timeline(timestamp):
+    """실행 타임라인 분석 (올바른 날짜 시간 표시)"""
+    log_file = f"logs/ansible_execute_log_{timestamp}.log"
+    
+    if not os.path.exists(log_file):
+        return None
+        
+    try:
+        # timestamp에서 실행 날짜 추출 (예: 20250620_141836)
+        execution_date = datetime.strptime(timestamp, "%Y%m%d_%H%M%S").date()
+        
+        with open(log_file, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+        
+        # 로그에서 시간 정보 추출
+        timeline_events = []
+        for line in log_content.split('\n'):
+            if '[' in line and ']' in line:
+                try:
+                    time_part = line.split('[')[1].split(']')[0]
+                    event_part = line.split(']')[1].strip()
+                    
+                    if 'TASK' in event_part or 'PLAY' in event_part:
+                        # HH:MM:SS 형식을 실제 datetime으로 변환
+                        hour, minute, second = map(int, time_part.split(':'))
+                        event_datetime = datetime.combine(execution_date, datetime.min.time().replace(
+                            hour=hour, minute=minute, second=second
+                        ))
+                        
+                        timeline_events.append({
+                            'start_time': event_datetime,
+                            'end_time': event_datetime + pd.Timedelta(seconds=30),  # 30초 지속으로 가정
+                            'event': event_part[:50] + '...' if len(event_part) > 50 else event_part,
+                            'type': 'TASK' if 'TASK' in event_part else 'PLAY'
+                        })
+                except:
+                    continue
+        
+        if timeline_events:
+            timeline_df = pd.DataFrame(timeline_events)
+            
+            # Gantt 차트 스타일의 타임라인
+            fig = px.timeline(
+                timeline_df,
+                x_start="start_time",
+                x_end="end_time", 
+                y="event",
+                color="type",
+                title=f"Ansible 실행 타임라인 ({execution_date.strftime('%Y-%m-%d')})",
+                color_discrete_map={
+                    'TASK': '#1f77b4',
+                    'PLAY': '#ff7f0e'
+                }
+            )
+            
+            # x축 시간 형식 개선
+            fig.update_xaxes(
+                title="실행 시간",
+                tickformat="%H:%M:%S"
+            )
+            fig.update_yaxes(title="실행 항목")
+            fig.update_layout(height=600, showlegend=True)
+            return fig
+            
+    except Exception as e:
+        st.error(f"타임라인 생성 실패: {str(e)}")
+    
+    return None
+
+def calculate_execution_time(timestamp):
+    """로그에서 실행 시간을 계산"""
+    log_file = f"logs/ansible_execute_log_{timestamp}.log"
+    
+    if not os.path.exists(log_file):
+        return None
+        
+    try:
+        with open(log_file, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+        
+        lines = log_content.split('\n')
+        start_time = None
+        end_time = None
+        
+        # 시작 시간과 종료 시간 찾기
+        for line in lines:
+            if '[' in line and ']' in line:
+                try:
+                    time_part = line.split('[')[1].split(']')[0]
+                    # 첫 번째 타임스탬프를 시작 시간으로
+                    if start_time is None:
+                        start_time = time_part
+                    # 마지막 타임스탬프를 종료 시간으로 계속 업데이트
+                    end_time = time_part
+                except:
+                    continue
+        
+        if start_time and end_time:
+            # 시간 형식: HH:MM:SS
+            start_h, start_m, start_s = map(int, start_time.split(':'))
+            end_h, end_m, end_s = map(int, end_time.split(':'))
+            
+            start_seconds = start_h * 3600 + start_m * 60 + start_s
+            end_seconds = end_h * 3600 + end_m * 60 + end_s
+            
+            # 날짜가 바뀐 경우 처리
+            if end_seconds < start_seconds:
+                end_seconds += 24 * 3600
+            
+            duration_seconds = end_seconds - start_seconds
+            
+            # 분:초 형식으로 변환
+            minutes = duration_seconds // 60
+            seconds = duration_seconds % 60
+            
+            return f"{minutes}분 {seconds}초"
+            
+    except Exception as e:
+        return None
+    
+    return None
     """실행 타임라인 분석"""
     log_file = f"logs/ansible_execute_log_{timestamp}.log"
     
@@ -401,21 +663,20 @@ def main(timestamp=None):
         except:
             st.markdown(f"<h4 style='text-align: right; margin-top: 20px; color: #1976d2;'>📅 {timestamp}</h4>", 
                     unsafe_allow_html=True)
-
+    
     # 로그 다운로드 및 메인으로 돌아가기 버튼
-    col1, col2, col3 = st.columns([1, 1, 3])
-
+    st.markdown("---")
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
     with col1:
         download_log_file(timestamp)
-
+    
     with col2:
         # 메인화면 돌아가기 버튼
         if st.button("⬅️ 메인화면 돌아가기"):
             st.query_params.clear()
             st.rerun()
     
-    st.markdown("---")
-        
     # 데이터 로드
     with st.spinner("📂 분석 결과 데이터 로딩 중..."):
         result_data, error = load_timestamp_results(timestamp)
@@ -471,7 +732,13 @@ def main(timestamp=None):
         
         df = pd.concat(all_dataframes, ignore_index=True)
         
-        # 성공 메시지와 기본 통계
+        # ⭐ 실질적 양호 상태 계산 (조치 완료도 양호로 간주)
+        df['실질적_양호상태'] = (
+            (df['전체 취약 여부'] == False) | 
+            (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))
+        )
+        
+        # 성공 메시지와 기본 통계 (실질적 상태 기준)
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.success(f"✅ **{len(df)}**개 점검 항목")
@@ -480,22 +747,24 @@ def main(timestamp=None):
         with col3:
             st.warning(f"📁 **{result_data['total_files']}**개 결과 파일")
         with col4:
-            vulnerable_count = df[df['전체 취약 여부'] == True].shape[0]
-            if vulnerable_count > 0:
-                st.error(f"⚠️ **{vulnerable_count}**개 취약점")
+            # 실질적 취약점 수 (조치 완료 제외)
+            actual_vulnerable_count = len(df[df['실질적_양호상태'] == False])
+            if actual_vulnerable_count > 0:
+                st.error(f"⚠️ **{actual_vulnerable_count}**개 실질적 취약점")
             else:
-                st.success("🛡️ **취약점 없음**")
+                st.success("🛡️ **모든 취약점 해결됨**")
         
     except Exception as e:
         st.error(f"❌ 데이터 파싱 중 오류 발생: {str(e)}")
         return
     
-    # 탭 구성
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    st.markdown("---")
+    
+    # 탭 구성 (파일 시스템 분석 제거)
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 종합 대시보드", 
         "🖥️ 서버별 분석", 
         "🔍 취약점 상세", 
-        "📁 파일 시스템 분석",
         "⏱️ 실행 분석", 
         "📄 원본 데이터"
     ])
@@ -504,28 +773,75 @@ def main(timestamp=None):
         # === 종합 대시보드 ===
         st.header("📋 보안 점검 종합 현황")
         
-        # 핵심 메트릭
+        # 핵심 메트릭 (실질적 상태 기준으로 모두 수정)
         total_checks = len(df)
-        vulnerable_items = df[df['전체 취약 여부'] == True].shape[0] 
-        safe_items = df[df['전체 취약 여부'] == False].shape[0]
+        
+        # 실질적 취약/양호 상태 계산
+        actual_vulnerable_items = len(df[df['실질적_양호상태'] == False])
+        actual_safe_items = len(df[df['실질적_양호상태'] == True])
+        
         remediation_needed = df[df['조치 결과'].str.contains("수동 조치 필요", case=False, na=False)].shape[0]
         remediation_complete = df[df['조치 결과'].str.contains("완료|성공", case=False, na=False)].shape[0]
         
+        # 개선 효과 분석 추가 (실질적 상태 기준)
+        originally_safe = df[(df['실질적_양호상태'] == True) & (df['조치 여부'] == False)]
+        remediated_safe = df[(df['조치 여부'] == True) & 
+                           (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))]
+        
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("🔍 총 점검 항목", total_checks)
-        col2.metric("⚠️ 취약점 발견", vulnerable_items, delta=f"{(vulnerable_items/total_checks*100):.1f}%")
-        col3.metric("✅ 양호 항목", safe_items, delta=f"{(safe_items/total_checks*100):.1f}%")
+        col2.metric("⚠️ 실질적 취약점", actual_vulnerable_items, delta=f"{(actual_vulnerable_items/total_checks*100):.1f}%")
+        col3.metric("✅ 실질적 양호", actual_safe_items, delta=f"{(actual_safe_items/total_checks*100):.1f}%")
         col4.metric("🔧 조치 필요", remediation_needed)
         col5.metric("🛡️ 조치 완료", remediation_complete)
         
+        # 보안 개선 효과 메트릭 추가
+        st.markdown("### 🚀 보안 개선 효과 분석")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("🟢 원래부터 양호", len(originally_safe), 
+                   help="처음 점검 시부터 보안 설정이 올바르게 되어 있던 항목")
+        col2.metric("🔄 조치 후 양호", len(remediated_safe), 
+                   help="취약점이 발견되었지만 Ansible 자동 조치로 양호해진 항목")
+        
+        if len(remediated_safe) > 0:
+            # 전체 발견된 문제 중에서 자동 해결된 비율
+            total_issues_found = len(df[df['조치 여부'] == True])  # 조치가 시도된 항목들
+            if total_issues_found > 0:
+                improvement_rate = len(remediated_safe) / total_issues_found * 100
+                col3.metric("📈 자동 해결율", f"{improvement_rate:.1f}%",
+                           help="조치가 시도된 항목 중 성공적으로 해결된 비율")
+            else:
+                col3.metric("📈 자동 해결율", "0%")
+        else:
+            col3.metric("📈 자동 해결율", "0%")
+            
+        col4.metric("🎯 전체 보안율", f"{(actual_safe_items/total_checks*100):.1f}%",
+                   help="조치 완료 포함한 실질적으로 양호한 항목의 비율")
+        
         st.markdown(" ")
         
-        # 종합 차트
-        fig_vulnerability = create_vulnerability_severity_chart(df)
-        if fig_vulnerability:
-            st.plotly_chart(fig_vulnerability, use_container_width=True)
+        # 보안 개선 효과 차트
+        fig_improvement1, fig_improvement2, improvement_data = create_security_improvement_analysis(df)
+        if fig_improvement1 and fig_improvement2:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(fig_improvement1, use_container_width=True)
+            with col2:
+                st.plotly_chart(fig_improvement2, use_container_width=True)
+            
+            # 개선 효과 상세 테이블
+            with st.expander("📊 보안 개선 효과 상세 통계"):
+                st.dataframe(improvement_data['stats'], use_container_width=True, hide_index=True)
+                
+                if len(improvement_data['remediated_safe']) > 0:
+                    st.subheader("🔄 자동 조치로 개선된 항목들")
+                    remediated_display = improvement_data['remediated_safe'][['호스트', '작업 설명', '조치 결과']].copy()
+                    st.dataframe(remediated_display, use_container_width=True)
+                else:
+                    st.info("자동 조치로 개선된 항목이 없습니다.")
         
-        # 서버 비교 차트
+        # 서버 비교 차트 (실질적 상태가 포함된 df 전달)
         fig_server_comparison = create_server_comparison_chart(df)
         if fig_server_comparison:
             st.plotly_chart(fig_server_comparison, use_container_width=True)
@@ -547,25 +863,32 @@ def main(timestamp=None):
             server_df = df[df['호스트'] == selected_server]
         
         if len(server_df) > 0:
-            # 서버별 통계
-            col1, col2= st.columns(2)
+            # 서버별 통계 (실질적 상태 기준) - 2열로 변경
+            col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("📊 점검 현황")
+                st.subheader("📊 점검 현황 (실질적 상태)")
                 server_stats = server_df.groupby('호스트').agg({
-                    '전체 취약 여부': ['count', 'sum']
+                    '실질적_양호상태': ['count', lambda x: x.sum(), lambda x: (~x).sum()]
                 }).round(2)
-                server_stats.columns = ['총점검', '취약발견']
-                server_stats['양호'] = server_stats['총점검'] - server_stats['취약발견']
+                server_stats.columns = ['총점검', '실질적_양호', '실질적_취약']
                 st.dataframe(server_stats, use_container_width=True)
             
             with col2:
                 st.subheader("🔧 조치 현황")
-                remediation_stats = server_df.groupby('호스트')['조치 결과'].value_counts().unstack(fill_value=0)
-                st.dataframe(remediation_stats, use_container_width=True)
+                # 조치 현황을 더 세분화해서 표시
+                remediation_detailed = server_df.groupby('호스트').apply(lambda x: pd.Series({
+                    '원래부터 양호': len(x[(x['실질적_양호상태'] == True) & (x['조치 여부'] == False)]),
+                    '조치 완료': len(x[x['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False)]),
+                    '수동 조치 필요': len(x[x['조치 결과'].str.contains("수동 조치 필요", case=False, na=False)]),
+                    '조치 불필요': len(x[x['조치 결과'].str.contains("조치 불필요", case=False, na=False)])
+                })).fillna(0).astype(int)
+                
+                st.dataframe(remediation_detailed, use_container_width=True)
             
-            st.subheader("📋 점검 유형")
-            task_stats = server_df['작업 설명'].value_counts().head(10)
+            # 점검 유형을 별도 행으로 이동
+            st.subheader("📋 점검 유형 (전체)")
+            task_stats = server_df['작업 설명'].value_counts()  # head(10) 제거
             
             # 표 형태로 변환
             task_df = pd.DataFrame({
@@ -575,21 +898,21 @@ def main(timestamp=None):
             
             st.dataframe(task_df, use_container_width=True, hide_index=True)
             
-            # 서버별 취약점 히트맵
+            # 서버별 취약점 히트맵 (실질적 상태 기준)
             if len(result_data['servers']) > 1:
-                st.subheader("🔥 서버-취약점 히트맵")
+                st.subheader("🔥 서버-취약점 히트맵 (실질적 상태)")
                 heatmap_data = df.pivot_table(
                     index='작업 설명', 
                     columns='호스트', 
-                    values='전체 취약 여부', 
-                    aggfunc='sum',
+                    values='실질적_양호상태', 
+                    aggfunc=lambda x: (~x).sum(),  # 실질적 취약점 수
                     fill_value=0
                 )
                 
                 if not heatmap_data.empty:
                     fig_heatmap = px.imshow(
                         heatmap_data.values,
-                        labels=dict(x="서버", y="점검 항목", color="취약점 수"),
+                        labels=dict(x="서버", y="점검 항목", color="실질적 취약점 수"),
                         x=heatmap_data.columns,
                         y=heatmap_data.index,
                         color_continuous_scale='Reds',
@@ -604,20 +927,43 @@ def main(timestamp=None):
         # === 취약점 상세 ===
         st.header("🔍 취약점 상세 분석")
         
-        vulnerable_df = df[df['전체 취약 여부'] == True]
+        # 실질적으로 취약한 항목만 표시 (조치 완료 제외)
+        vulnerable_df = df[df['실질적_양호상태'] == False]
         
         if len(vulnerable_df) > 0:
-            st.subheader(f"⚠️ 발견된 취약점 ({len(vulnerable_df)}개)")
+            st.subheader(f"⚠️ 실질적 취약점 ({len(vulnerable_df)}개)")
+            st.info("💡 '조치 완료'된 항목은 해결된 것으로 간주하여 제외됩니다.")
             
-            # 취약점 상세 차트
-            fig1, fig2 = create_vulnerability_details_analysis(df)
+            # 취약점 상세 차트 (실질적 취약점 기준)
+            fig1, fig2 = create_vulnerability_details_analysis(vulnerable_df)  # vulnerable_df 사용
             if fig1:
                 st.plotly_chart(fig1, use_container_width=True)
             if fig2:
                 st.plotly_chart(fig2, use_container_width=True)
+                
+        else:
+            st.success("🛡️ 모든 취약점이 해결되었습니다!")
+            st.info("일부 항목은 '조치 완료' 상태로 자동 해결되었습니다.")
+        
+        # 조치 완료된 항목들도 별도로 표시
+        resolved_items = df[(df['조치 여부'] == True) & 
+                          (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))]
+        
+        if len(resolved_items) > 0:
+            st.subheader(f"✅ 자동 해결된 항목들 ({len(resolved_items)}개)")
             
+            with st.expander("🔧 Ansible이 자동으로 해결한 취약점들"):
+                for idx, row in resolved_items.iterrows():
+                    st.markdown(f"**{row['호스트']}** - {row['작업 설명']}")
+                    st.markdown(f"- 상태: {row['조치 결과']}")
+                    if row['취약 사유']:
+                        st.markdown(f"- 원인: {row['취약 사유']}")
+                    st.markdown("---")
+        
+        # 실질적 취약점이 있는 경우에만 상세 분석 표시
+        if len(vulnerable_df) > 0:
             # 취약점 상세 테이블
-            st.subheader("📋 취약점 상세 목록")
+            st.subheader("📋 실질적 취약점 상세 목록")
             
             # 필터링 옵션
             col1, col2 = st.columns(2)
@@ -630,7 +976,7 @@ def main(timestamp=None):
             with col2:
                 filter_remediation = st.selectbox(
                     "조치 상태 필터:",
-                    options=['전체', '수동 조치 필요', '조치 완료', '미조치'],
+                    options=['전체', '수동 조치 필요', '미조치', '실패'],
                     index=0
                 )
             
@@ -668,67 +1014,8 @@ def main(timestamp=None):
                         if row['현재 소유자']:
                             tech_details.append(f"현재 소유자: `{row['현재 소유자']}`")
                         st.markdown(" | ".join(tech_details))
-        else:
-            st.success("🛡️ 취약점이 발견되지 않았습니다!")
     
     with tab4:
-        # === 파일 시스템 분석 ===
-        st.header("📁 파일 시스템 보안 분석")
-        
-        # 파일 관련 취약점 필터링
-        file_related_df = df[df['작업 설명'].str.contains("파일|권한|소유자|SUID|SGID", case=False, na=False)]
-        
-        if len(file_related_df) > 0:
-            # 파일 시스템 취약점 차트
-            fig_file_analysis = create_detailed_file_analysis(df)
-            if fig_file_analysis:
-                st.plotly_chart(fig_file_analysis, use_container_width=True)
-            
-            # 파일 권한 관련 통계
-            st.subheader("📊 파일 권한 점검 통계")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # 권한 관련 취약점 분포
-                permission_issues = file_related_df.groupby('작업 설명')['전체 취약 여부'].sum().sort_values(ascending=False)
-                if not permission_issues.empty:
-                    st.bar_chart(permission_issues)
-            
-            with col2:
-                # 서버별 파일 권한 문제
-                server_file_issues = file_related_df.groupby('호스트')['전체 취약 여부'].sum().sort_values(ascending=False)
-                if not server_file_issues.empty:
-                    st.bar_chart(server_file_issues)
-            
-            # 상세 파일 권한 문제 목록
-            st.subheader("🔍 파일 권한 문제 상세")
-            
-            vulnerable_files = file_related_df[file_related_df['전체 취약 여부'] == True]
-            
-            if len(vulnerable_files) > 0:
-                # 테이블 형태로 표시
-                display_columns = ['호스트', '작업 설명', '진단 결과', '조치 결과', '취약 파일 수']
-                st.dataframe(
-                    vulnerable_files[display_columns].style.format({'취약 파일 수': '{:.0f}'}),
-                    use_container_width=True
-                )
-                
-                # 파일별 상세 정보
-                with st.expander("📋 파일별 상세 정보 보기"):
-                    for idx, row in vulnerable_files.iterrows():
-                        if row['취약 파일 수'] > 0:
-                            st.markdown(f"**{row['호스트']} - {row['작업 설명']}**")
-                            st.markdown(f"- 취약 파일 수: {row['취약 파일 수']}개")
-                            if row['취약 사유']:
-                                st.markdown(f"- 상세 사유: {row['취약 사유'][:200]}...")
-                            st.markdown("---")
-            else:
-                st.info("파일 권한 관련 취약점이 발견되지 않았습니다.")
-        else:
-            st.info("파일 시스템 관련 점검 항목이 없습니다.")
-    
-    with tab5:
         # === 실행 분석 ===
         st.header("⏱️ Ansible 실행 분석")
         
@@ -739,25 +1026,30 @@ def main(timestamp=None):
         else:
             st.info("실행 타임라인 데이터를 생성할 수 없습니다.")
         
-        # 실행 통계
+        # 실행 통계 (실질적 상태 기준)
         st.subheader("📊 실행 통계")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("전체 실행 시간", "계산 중...")  # 실제로는 로그에서 추출
-            st.metric("평균 서버당 소요시간", f"{len(df) / len(result_data['servers']) if result_data['servers'] else 0:.1f}개 점검/서버")
+            # 실제 실행 시간 계산
+            execution_time = calculate_execution_time(timestamp)
+            if execution_time:
+                st.metric("⏱️ 전체 실행 시간", execution_time)
+            
+            st.metric("📊 평균 서버당 점검", f"{len(df) / len(result_data['servers']) if result_data['servers'] else 0:.1f}개 점검/서버")
         
         with col2:
-            success_rate = (len(df[df['전체 취약 여부'] == False]) / len(df) * 100) if len(df) > 0 else 0
-            st.metric("점검 성공률", f"{success_rate:.1f}%")
+            # 실질적 성공률
+            success_rate = (len(df[df['실질적_양호상태'] == True]) / len(df) * 100) if len(df) > 0 else 0
+            st.metric("✅ 실질적 성공률", f"{success_rate:.1f}%")
             
             automation_rate = (len(df[df['조치 결과'].str.contains("완료", case=False, na=False)]) / len(df) * 100) if len(df) > 0 else 0
-            st.metric("자동 조치율", f"{automation_rate:.1f}%")
+            st.metric("🔧 자동 조치율", f"{automation_rate:.1f}%")
         
         with col3:
-            st.metric("점검된 서버 수", len(result_data['servers']))
-            st.metric("점검 항목 유형", len(result_data['check_types']))
+            st.metric("🖥️ 점검된 서버 수", len(result_data['servers']))
+            st.metric("📋 점검 항목 유형", len(result_data['check_types']))
         
         # 실행 로그 요약
         st.subheader("📋 실행 로그 요약")
@@ -792,7 +1084,7 @@ def main(timestamp=None):
         else:
             st.warning("로그 파일을 찾을 수 없습니다.")
     
-    with tab6:
+    with tab5:
         # === 원본 데이터 ===
         st.header("📄 원본 데이터 및 다운로드")
         
@@ -838,15 +1130,15 @@ def main(timestamp=None):
         selected_columns = st.multiselect(
             "표시할 컬럼 선택:",
             options=available_columns,
-            default=['호스트', '작업 설명', '진단 결과', '전체 취약 여부', '조치 결과']
+            default=['호스트', '작업 설명', '진단 결과', '실질적_양호상태', '조치 결과']
         )
         
         if selected_columns:
-            # 필터링 옵션
+            # 필터링 옵션 (실질적 상태 기준)
             col1, col2 = st.columns(2)
             
             with col1:
-                show_only_vulnerable = st.checkbox("취약점만 표시", value=False)
+                show_only_vulnerable = st.checkbox("실질적 취약점만 표시", value=False)
             
             with col2:
                 show_only_manual = st.checkbox("수동 조치 필요 항목만 표시", value=False)
@@ -855,7 +1147,7 @@ def main(timestamp=None):
             filtered_df = df.copy()
             
             if show_only_vulnerable:
-                filtered_df = filtered_df[filtered_df['전체 취약 여부'] == True]
+                filtered_df = filtered_df[filtered_df['실질적_양호상태'] == False]
             
             if show_only_manual:
                 filtered_df = filtered_df[filtered_df['조치 결과'].str.contains("수동", case=False, na=False)]
@@ -898,18 +1190,18 @@ def main(timestamp=None):
             )
         
         with col2:
-            # 취약점만 CSV 다운로드
-            vulnerable_only = df[df['전체 취약 여부'] == True]
+            # 실질적 취약점만 CSV 다운로드
+            vulnerable_only = df[df['실질적_양호상태'] == False]
             if len(vulnerable_only) > 0:
                 vulnerable_csv = vulnerable_only.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
-                    "⚠️ 취약점만 CSV 다운로드",
+                    "⚠️ 실질적 취약점만 CSV 다운로드",
                     vulnerable_csv,
-                    f"vulnerabilities_{timestamp}.csv",
+                    f"actual_vulnerabilities_{timestamp}.csv",
                     "text/csv"
                 )
             else:
-                st.button("⚠️ 취약점만 CSV 다운로드", disabled=True, help="취약점이 없습니다")
+                st.button("⚠️ 실질적 취약점만 CSV 다운로드", disabled=True, help="실질적 취약점이 없습니다")
         
         with col3:
             # JSON 원본 데이터 다운로드
@@ -924,6 +1216,7 @@ def main(timestamp=None):
         
         # 로그 파일 내용 표시
         st.subheader("📋 실행 로그 전체보기")
+        
         log_file = f"logs/ansible_execute_log_{timestamp}.log"
         if os.path.exists(log_file):
             try:
@@ -935,7 +1228,6 @@ def main(timestamp=None):
                 
                 if search_term:
                     # 검색 결과 하이라이팅
-                    highlighted_content = log_content.replace(search_term, f"**{search_term}**")
                     matching_lines = [line for line in log_content.split('\n') if search_term.lower() in line.lower()]
                     
                     st.info(f"검색 결과: {len(matching_lines)}개 라인에서 '{search_term}' 발견")
@@ -944,8 +1236,9 @@ def main(timestamp=None):
                         st.markdown("**검색 결과 미리보기 (최대 10개):**")
                         for line in matching_lines[:10]:
                             st.code(line.strip())
+                        st.markdown("---")
                 
-                # 전체 로그 표시
+                # 전체 로그 표시 (바로 표시)
                 st.code(log_content, language="text")
                 
             except Exception as e:
