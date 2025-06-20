@@ -188,7 +188,6 @@ if static_enabled and active_servers and vulnerability_categories:
                         f"{category} ({len(items)}개)", 
                         key=f"category_{category}",
                         value=server_linux_all,
-                        disabled=server_linux_all
                     )
                     
                     if category_selected or server_linux_all:
@@ -200,7 +199,6 @@ if static_enabled and active_servers and vulnerability_categories:
                                     item, 
                                     key=f"item_{item}", 
                                     value=True if (server_linux_all or category_selected) else False,
-                                    disabled=server_linux_all
                                 )
                                 category_items[item] = item_selected
                             selected_checks["Server-Linux"]["categories"][category] = category_items
@@ -274,7 +272,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 os.makedirs(os.path.join(result_folder_path, "results"), exist_ok=True)  # 결과 하위 폴더도 미리 생성
                 
                 # 선택된 점검 항목에 따른 플레이북 태스크 생성
-                playbook_tasks = generate_playbook_tasks(selected_checks, filename_mapping) if 'selected_checks' in locals() else []
+                playbook_tasks = generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_categories) if 'selected_checks' in locals() else []
                 
                 # 백엔드 콘솔에 생성 정보 출력
                 print(f"\n{'='*80}")
