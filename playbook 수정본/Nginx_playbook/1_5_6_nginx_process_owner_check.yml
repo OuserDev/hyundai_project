@@ -1,0 +1,168 @@
+- name: Nginx 프로세스 권한 진단 및 조치
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "nginx_process_owner_check.yml"
+    result_json_path: "/tmp/security_report_nginx_process_owner_check.json"
+    manual_remediation_guide: "nginx.conf 파일의 'user' 지시어를 'root'가 아닌 전용 계정(예: www-data, nginx)으로 변경하고, 해당 계정의 쉘을 nologin으로 설정하십시오."
+    nginx_main_config: "/etc/nginx/nginx.conf"
+    # OS별 Nginx 실행 유저 정의
+    nginx_user: "{{ 'nginx' if ansible_facts['os_family'] == 'RedHat' else 'www-data' }}"
+    # OS별 웹 기본 디렉터리 경로 정의
+    web_root_dir: "/var/www/html" # 필요시 환경에 맞게 수정
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (Nginx 설치 여부)
+    # ----------------------------------------------------------------
+    - name: Nginx 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which nginx
+      register: nginx_installed
+      changed_when: false
+      failed_when: false
+
+    - name: Nginx 미설치 시 작업 종료
+      when: nginx_installed.rc != 0
+      block:
+        - name: Nginx 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "Nginx가 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: nginx.conf 파일에 'user root' 설정 여부 진단
+      ansible.builtin.shell: "grep -q -E '^\\s*user\\s+root\\s*;' {{ nginx_main_config }}"
+      register: user_root_check
+      changed_when: false
+      failed_when: false # grep이 못찾으면(rc=1) 오류가 아님
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ user_root_check.rc == 0 }}" # 'user root'를 찾으면(rc=0) 취약
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (Nginx가 root 권한으로 실행되도록 설정되어 있습니다){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "Nginx 프로세스 권한 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "Nginx 설정 파일에 'user root;'가 명시되어 있어 보안상 취약합니다." if is_vulnerable else "Nginx가 root가 아닌 전용 계정으로 실행되도록 설정되어 있습니다.",
+                "checked_file": nginx_main_config
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 조치 블록 (취약한 경우에만 실행)
+      when: is_vulnerable
+      block:
+        - name: Nginx 실행 계정을 {{ nginx_user }}로 변경
+          ansible.builtin.lineinfile:
+            path: "{{ nginx_main_config }}"
+            regexp: '^\s*user\s+root\s*;'
+            line: "user {{ nginx_user }};"
+            backup: yes
+          register: r_user_change
+          notify: Reload nginx service
+
+        - name: {{ nginx_user }} 계정의 쉘을 nologin으로 변경
+          ansible.builtin.user:
+            name: "{{ nginx_user }}"
+            shell: /usr/sbin/nologin
+          register: r_shell_change
+
+        - name: 웹 디렉터리 소유권을 {{ nginx_user }}로 변경
+          ansible.builtin.file:
+            path: "{{ web_root_dir }}"
+            owner: "{{ nginx_user }}"
+            group: "{{ nginx_user }}"
+            recurse: yes
+          register: r_owner_change
+
+        - name: 핸들러 즉시 실행
+          ansible.builtin.meta: flush_handlers
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ (r_user_change is defined and r_user_change.changed) or (r_shell_change is defined and r_shell_change.changed) or (r_owner_change is defined and r_owner_change.changed) }}"
+        remediation_tasks_performed: >-
+          {{
+            (['nginx.conf 사용자 변경'] if (r_user_change is defined and r_user_change.changed) else []) +
+            (['{{ nginx_user }} 쉘 nologin으로 변경'] if (r_shell_change is defined and r_shell_change.changed) else []) +
+            (['웹 디렉터리 소유권 변경'] if (r_owner_change is defined and r_owner_change.changed) else [])
+          }}
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if (is_vulnerable and not (remediation_done | default(false))) else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+  # ----------------------------------------------------------------
+  # 핸들러: 조치 시 문법 검사 및 서비스 재시작
+  # ----------------------------------------------------------------
+  handlers:
+    - name: Reload nginx service
+      block:
+        - name: Nginx 설정 파일 문법 검사
+          ansible.builtin.command: nginx -t
+          changed_when: false
+
+        - name: Nginx 서비스 재시작
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded

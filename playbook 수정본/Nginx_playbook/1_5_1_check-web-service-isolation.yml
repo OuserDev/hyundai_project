@@ -1,0 +1,128 @@
+- name: Nginx 기본 Document Root 사용 여부 진단
+  hosts: target_servers
+  become: yes
+  gather_facts: no
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "nginx_default_document_root.yml"
+    result_json_path: "/tmp/security_report_nginx_default_document_root.json"
+    manual_remediation_guide: "Nginx의 기본 Document Root(/var/www/html) 사용을 중지하고 서비스별 전용 디렉터리를 사용하도록 변경하십시오. 예: 1.mkdir -p /var/www/new_service 2.Nginx 설정 파일의 'root /var/www/html;'을 'root /var/www/new_service;'로 수정 3.nginx -t && systemctl restart nginx"
+    # 진단할 Nginx 설정 경로 리스트
+    nginx_config_paths:
+      - /etc/nginx/nginx.conf
+      - /etc/nginx/conf.d/
+      - /etc/nginx/sites-enabled/
+
+  # ----------------------------------------------------------------
+  # 0. 사전 확인 (Nginx 설치 여부)
+  # ----------------------------------------------------------------
+  tasks:
+  - name: Nginx 설치 여부 확인 (사전 확인)
+    ansible.builtin.command: which nginx
+    register: nginx_installed
+    changed_when: false
+    failed_when: false
+
+  - name: Nginx 미설치 시 작업 종료
+    when: nginx_installed.rc != 0
+    block:
+      - name: Nginx 미설치 메시지 출력
+        ansible.builtin.debug:
+          msg: "Nginx가 설치되어 있지 않아 진단을 건너뜁니다."
+      - name: 플레이북 실행 종료
+        ansible.builtin.meta: end_play
+
+  # ----------------------------------------------------------------
+  # 2. 진단
+  # ----------------------------------------------------------------
+  - name: 기본 Document Root(/var/www/html) 사용 여부 진단
+    ansible.builtin.shell: "grep -r -E '^\\s*root\\s+/var/www/html\\s*;' {{ nginx_config_paths | join(' ') }} 2>/dev/null | grep ."
+    register: docroot_check
+    changed_when: false
+    failed_when: false # grep이 아무것도 못찾아도(rc=1) 오류가 아님
+
+  - name: 취약 여부 종합 판단
+    ansible.builtin.set_fact:
+      is_vulnerable: "{{ docroot_check.rc == 0 }}" # grep이 결과를 찾으면(rc=0) 취약
+      vulnerable_configs: "{{ docroot_check.stdout_lines | default([]) | unique }}"
+      report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  # ----------------------------------------------------------------
+  # 3. 진단 결과 보고
+  # ----------------------------------------------------------------
+  - name: 진단 결과 콘솔 출력
+    ansible.builtin.debug:
+      msg: "진단 결과: {% if is_vulnerable %}취약 (기본 Document Root 사용 설정 발견){% else %}양호{% endif %}"
+
+  - name: 초기 JSON 보고서 생성 및 저장
+    ansible.builtin.copy:
+      content: |
+        {{
+          {
+            "playbook_name": playbook_name,
+            "task_description": "Nginx 기본 Document Root 사용 여부 점검",
+            "diagnosis_result": "취약" if is_vulnerable else "양호",
+            "is_vulnerable": is_vulnerable,
+            "timestamp": report_timestamp,
+            "hostname": inventory_hostname,
+            "vulnerability_details": {
+              "reason": "웹 서비스 격리 원칙에 위배되는 기본 Document Root(/var/www/html)를 사용하고 있습니다." if is_vulnerable else "서비스별 Document Root가 적절히 설정되어 있습니다.",
+              "vulnerable_configurations": vulnerable_configs
+            },
+            "remediation_tasks_performed": []
+          } | to_nice_json
+        }}
+      dest: "{{ result_json_path }}"
+      mode: '0644'
+    delegate_to: localhost
+    become: yes   # <--- 오류 수정: 값을 'yes'로 명시
+
+  # ----------------------------------------------------------------
+  # 4. 조치
+  # ----------------------------------------------------------------
+  - name: 자동 조치 건너뛰기 알림
+    ansible.builtin.debug:
+      msg: "이 항목은 웹 서비스 중단을 유발할 수 있어 자동 조치를 수행하지 않습니다. 수동 조치가 필요합니다."
+    when: is_vulnerable
+
+  # ----------------------------------------------------------------
+  # 5. 조치 결과 보고
+  # ----------------------------------------------------------------
+  - name: 수행된 조치 작업 기록 (수동 조치 필요)
+    ansible.builtin.set_fact:
+      remediation_done: false
+      remediation_tasks_performed: ["자동 조치 미수행 (수동 조치 필요)"]
+    when: is_vulnerable
+
+  - name: 조치 결과 콘솔 출력
+    ansible.builtin.debug:
+      msg: |
+        총괄 조치 결과: {% if not is_vulnerable %}조치 불필요 (양호)
+        {% else %}조치 실패 (수동 조치 필요)
+        --------------------------------------------------
+        [수동 조치 권고]
+        {{ manual_remediation_guide }}
+        취약한 설정 라인:
+        {% for line in vulnerable_configs %}
+        - {{ line }}
+        {% endfor %}
+        --------------------------------------------------
+        {% endif %}
+
+  - name: 최종 JSON 보고서 파일 덮어쓰기
+    ansible.builtin.copy:
+      content: |
+        {{
+          (lookup('file', result_json_path) | from_json) | combine({
+            'remediation_applied': false,
+            'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+            'remediation_timestamp': report_timestamp,
+            'remediation_tasks_performed': remediation_tasks_performed | default([]),
+            'remediation_guide': manual_remediation_guide if is_vulnerable else ''
+          }, recursive=True) | to_nice_json
+        }}
+      dest: "{{ result_json_path }}"
+      mode: '0644'
+    delegate_to: localhost
+    become: yes
