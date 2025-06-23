@@ -1,6 +1,6 @@
 ---
 - name: 진단 및 조치 - 화면보호기 대기 시간 및 암호 설정
-  hosts: target_server_PC
+  hosts: target_servers
   become: yes
   gather_facts: yes
 
