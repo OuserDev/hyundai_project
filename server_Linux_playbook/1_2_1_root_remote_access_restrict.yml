@@ -1,6 +1,6 @@
 ---
 - name: 진단 및 조치 - root 계정 원격 접속 제한
-  hosts: target_server_PC
+  hosts: target_servers
   become: yes
   gather_facts: yes
 
