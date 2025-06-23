@@ -1,0 +1,113 @@
+---
+- name: 진단 및 조치 - 비인가 무선랜 사용 금지
+  hosts: target_server_PC
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # NetworkManager 연결 프로필이 저장되는 경로
+    nm_connection_path: "/etc/NetworkManager/system-connections/"
+
+    # 보고서 관련
+    playbook_name: "1_2_11_wireless_security.yml"
+    result_json_path: "/tmp/security_report_wireless_security.json"
+    remediation_tasks_performed: []
+    manual_remediation_guide: "불필요한 무선랜(Wi-Fi) 장치를 비활성화(또는 제거)하고, 저장된 Wi-Fi 접속 프로필을 삭제하십시오."
+
+  tasks:
+    # 2. 진단
+    # 시스템에 무선랜 인터페이스가 있는지 확인
+    - name: 무선랜 인터페이스 존재 여부 확인
+      ansible.builtin.set_fact:
+        wireless_interfaces: >-
+          {{ ansible_facts.interfaces |
+             map('extract', ansible_facts) |
+             selectattr('type', 'equalto', 'wlan') |
+             map(attribute='device') | list }}
+
+    # 저장된 Wi-Fi 접속 프로필 목록 검색
+    - name: 저장된 Wi-Fi 접속 프로필 검색
+      ansible.builtin.find:
+        paths: "{{ nm_connection_path }}"
+        patterns: "*.nmconnection"
+      register: wifi_profiles
+      ignore_errors: true
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        # 무선랜 인터페이스가 하나라도 있으면 '취약'(관리 대상)으로 판단
+        is_vulnerable: "{{ wireless_interfaces | length > 0 }}"
+        saved_wifi_profiles: "{{ wifi_profiles.files | map(attribute='path') | list }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (무선랜 장치 또는 프로필 발견){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "비인가 무선랜 사용 금지",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "시스템에 무선랜(Wi-Fi) 장치가 존재하거나, 저장된 Wi-Fi 접속 프로필이 있습니다." if is_vulnerable else "시스템에서 무선랜 장치 또는 접속 프로필이 발견되지 않았습니다.",
+                "detected_wireless_interfaces": wireless_interfaces,
+                "saved_wifi_profiles": saved_wifi_profiles
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치 (수동 조치 안내)
+    # 자동으로 장치를 비활성화하지 않고, 사용자에게 필요한 조치를 안내
+    - name: 필요한 수동 조치 안내
+      ansible.builtin.debug:
+        msg:
+          - "보안 점검 결과: 무선랜 기능이 활성화되어 있거나 접속 기록이 존재합니다."
+          - "발견된 무선랜 인터페이스: {{ wireless_interfaces | join(', ') }}"
+          - "저장된 Wi-Fi 프로필: {{ saved_wifi_profiles | join(', ') }}"
+          - "조치 권고:"
+          - "  - 이 무선랜 사용이 조직의 정책에 의해 허가된 것인지 확인하십시오."
+          - "  - 불필요한 경우, BIOS/UEFI 설정에서 무선랜 장치를 비활성화하거나 물리적으로 제거하는 것을 권장합니다."
+          - "  - 저장된 Wi-Fi 접속 프로필이 비인가된 것이라면 수동으로 삭제하십시오. (경로: {{ nm_connection_path }})"
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록 (자동 조치가 없으므로 '수동 조치 필요'로 기록)
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode
