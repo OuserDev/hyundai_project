@@ -1,0 +1,42 @@
+---
+- name: Nginx 웹 서비스 영역 진단
+  hosts: PostWebServers
+  become: yes
+  vars:
+    # sites-available 디렉터리의 모든 파일을 확인
+    nginx_sites_dir: /etc/nginx/sites-available
+    playbook_name: "1_5_1_check-web-service-isolation.yml"
+
+  tasks:
+    - name: Nginx 설치 여부 확인
+      command: which nginx
+      register: nginx_path
+      failed_when: false
+      changed_when: false
+
+    - name: Nginx 설치되지 않은 경우 종료
+      block:
+        - debug:
+            msg: "Nginx가 설치되지 않았습니다. 진단을 중단합니다."
+        - meta: end_host
+      when: nginx_path.rc != 0
+
+    - name: sites-available 디렉터리의 파일들 검색
+      shell: |
+        find /etc/nginx/sites-available -type f -exec grep -l '^\s*root\s\+/var/www/html\s*;\s*$' {} \;
+      register: found_files
+      changed_when: false
+      failed_when: false
+
+    - name: 검색 결과 출력
+      debug:
+        msg: |
+          === 검색 결과 ===
+          {% if found_files.stdout_lines | length > 0 %}
+          'root /var/www/html;'이 포함된 파일들:
+          {% for file in found_files.stdout_lines %}
+          - {{ file }}
+          {% endfor %}
+          {% else %}
+          'root /var/www/html;'이 포함된 파일을 찾을 수 없습니다.
+          {% endif %}

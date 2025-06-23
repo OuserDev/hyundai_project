@@ -1,0 +1,135 @@
+---
+- name: Nginx 버전 및 업그레이드 확인
+  hosts: PostWebServers
+  become: yes
+
+  vars:
+    playbook_name: "1_5_7_nginx_version_check.yml"
+    result_json_path: "/tmp/security_report_nginx_version_check.json"
+    remediation_tasks_performed: []
+
+
+  tasks:
+    - name: Nginx 설치 여부 확인
+      command: which nginx
+      register: nginx_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Nginx 미설치 시 종료
+      fail:
+        msg: "Nginx가 설치되어 있지 않습니다. 설치 후 다시 실행해주세요."
+      when: nginx_installed.rc != 0
+
+    # 패키지 목록 업데이트
+    - name: 패키지 목록 업데이트
+      apt:
+        update_cache: yes
+      register: apt_update_result
+      failed_when: false
+
+    # Nginx 현재 버전 확인
+    - name: Nginx 현재 버전 확인
+      command: nginx -v
+      register: nginx_current
+      changed_when: false
+      failed_when: false
+
+    # Nginx 업그레이드 가능 여부 확인
+    - name: Nginx 업그레이드 가능 여부 확인
+      shell: apt list --upgradable 2>/dev/null | grep "^nginx"
+      register: nginx_upgradable
+      failed_when: false
+      changed_when: false
+
+    # 취약 여부 종합 판단
+    - name: 취약 여부 종합 판단
+      set_fact:
+        # 업그레이드 가능한 패키지가 있으면 취약으로 판정
+        is_vulnerable: "{{ nginx_upgradable.stdout | length > 0 }}"
+        current_version: "{{ nginx_current.stderr | default('확인 불가') }}"
+        upgrade_available: "{{ nginx_upgradable.stdout if nginx_upgradable.stdout else '최신 버전입니다' }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (Nginx 업데이트 필요){% else %}양호{% endif %}"
+
+    # 상세 정보 출력
+    - name: Nginx 정보 출력
+      debug:
+        msg: >
+          ==================== Nginx 정보 ====================
+          현재 버전: {{ current_version }}
+          업그레이드: {{ upgrade_available }}
+          ======================================================
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "Nginx 버전 및 업그레이드 확인",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "Nginx에 적용 가능한 업데이트가 존재합니다." if is_vulnerable else "Nginx가 최신 버전입니다.",
+                "nginx_info": {
+                  "current_version": current_version,
+                  "upgrade_available": upgrade_available,
+                  "nginx_installed": true
+                }
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치 (수동 조치 안내)
+    # 자동으로 업데이트하지 않고, 사용자에게 필요한 조치를 안내
+    - name: 필요한 수동 조치 안내
+      debug:
+        msg:
+          - "보안 점검 결과: Nginx에 업데이트가 필요합니다."
+          - "현재 버전: {{ current_version }}"
+          - "업그레이드 정보: {{ upgrade_available }}"
+          - "조치 권고:"
+          - "  - 업데이트 적용 전 현재 설정의 백업을 생성하십시오."
+          - "  - 'sudo apt-get update && sudo apt-get upgrade nginx' 명령어로 업데이트하십시오."
+          - "  - 업데이트 후 서비스 재시작이 필요할 수 있습니다."
+          - "  - 중요: 업데이트 적용 전 충분한 테스트를 권고합니다."
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록 (자동 조치가 없으므로 '수동 조치 필요'로 기록)
+    - name: 수행된 조치 작업 기록
+      set_fact:
+        remediation_done: false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode

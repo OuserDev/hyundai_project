@@ -1,0 +1,36 @@
+---
+- name: 환경설정 파일 접근 권한 진단
+  hosts: PostWebServers
+  become: yes
+
+  tasks:
+    - name: 폴더 내 파일 목록 가져오기
+      find:
+        paths: "/etc/mysql/mysql.conf.d/"
+        file_type: file
+        recurse: yes  # 하위 폴더까지 검색
+      register: mysql_files
+
+    - name: 파일 권한 확인
+      stat:
+        path: "{{ item.path }}"
+      register: file_stats
+      loop: "{{ mysql_files.files }}"
+
+    - name: 권한 640 초과 파일 출력
+      debug:
+        msg: "수정 필요: {{ item.stat.path }} (현재: {{ item.stat.mode }})"
+      loop: "{{ file_stats.results }}"
+      when: 
+        - item.stat.mode is defined
+        - item.stat.mode > '0640'
+
+    - name: 파일 권한을 640으로 수정
+      file:
+        path: "{{ item.stat.path }}"
+        mode: '0640'
+      loop: "{{ file_stats.results }}"
+      when: 
+        - item.stat.mode is defined
+        - item.stat.mode > '0640'
+      register: permission_fixes

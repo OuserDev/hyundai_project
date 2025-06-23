@@ -1,0 +1,50 @@
+---
+- name: 패스워드 암호화 알고리즘 진단
+  hosts: PostWebServers
+  become: yes
+
+  vars_files:
+    - vars.yml
+    - vault_vars.yml
+
+  tasks:
+    - name: MySQL 설치 여부 확인
+      command: which mysql
+      register: mysql_installed
+      failed_when: false
+
+    - name: MySQL 미설치 시 종료
+      fail:
+        msg: "MySQL이 설치되어 있지 않습니다."
+      when: mysql_installed.rc != 0
+
+    - name: MySQL 서비스 상태 확인
+      systemd:
+        name: mysql
+      register: mysql_service_status
+
+    - name: 패스워드 알고리즘 확인
+      mysql_query:
+        query: "SELECT host, user, plugin FROM mysql.user;"
+      register: password_algorithm_direct
+
+    - name: 패스워드 알고리즘 결과 출력
+      debug:
+        msg: |
+          === 패스워드 알고리즘 확인 결과===
+          {% for user in password_algorithm_direct.query_result[0] %}
+          Host: {{ user.host }} | User: {{ user.user }} | Plugin: {{ user.plugin }}
+          {% endfor %}
+
+    - name: mysql_native_password 사용자 확인 및 경고
+      debug:
+        msg: |
+          다음 사용자들의 패스워드 플러그인을 변경해야 합니다:
+          {% for user in password_algorithm_direct.query_result[0] %}
+          {% if user.plugin == 'mysql_native_password' %}
+          - User: {{ user.user }}, Host: {{ user.host }}
+          {% endif %}
+          {% endfor %}
+          
+          보안 강화를 위해 caching_sha2_password 또는 sha256_password로 변경하세요.
+      when: password_algorithm_direct.query_result[0] | selectattr('plugin', 'equalto', 'mysql_native_password') | list | length > 0
