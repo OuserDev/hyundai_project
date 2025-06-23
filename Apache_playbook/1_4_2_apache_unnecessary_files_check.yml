@@ -1,0 +1,170 @@
+---
+- name: Apache 불필요한 파일 존재 여부 진단
+  hosts: PostWebServers
+  become: yes
+  gather_facts: yes
+  
+  # 1. 변수 정의
+    vars:
+    playbook_name: "apache_unnecessary_files_check.yml"
+    result_json_path: "/tmp/security_report_apache_unnecessary_files.json"
+    manual_remediation_guide: "발견된 불필요한 파일(백업, 임시, 테스트 파일 등)을 검토 후 즉시 삭제하거나 안전한 곳으로 이동시키십시오. 특히 설정 디렉터리의 실행 파일과 웹 경로의 정보 노출 파일(phpinfo.php 등)은 즉시 제거해야 합니다."
+    # --- 점검 대상 및 파일 패턴 정의 ---
+    apache_directories: ["/etc/apache2", "/var/log/apache2", "/var/www", "/usr/share/apache2"]
+    unnecessary_patterns:
+      - "*.old"
+      - "*.bak"
+      - "*.backup"
+      - "*.orig"
+      - "*.save"
+      - "*.tmp"
+      - "*.temp"
+      - "*~"
+      - "*.swp"
+      - "*.swo"
+      - "#*#"
+      - ".#*"
+      - "*.test"
+      - "test.*"
+      - "*.example"
+      - "example.*"
+      - "phpinfo.php"
+      - "info.php"
+      - "test.php"
+      - "*.dist"
+      - "*.php"
+      - "*.sh"
+      - "*.cgi"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (Apache 설치 여부)
+    # ----------------------------------------------------------------
+    - name: Apache 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which apache2
+      register: apache_installed
+      changed_when: false
+      failed_when: false
+
+    - name: Nginx 미설치 시 작업 종료
+      when: apache_installed.rc != 0
+      block:
+        - name: Nginx 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "Apache가 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+          
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: 불필요한 파일 통합 검색
+      ansible.builtin.shell: |
+        # 여러 패턴을 하나의 find 명령어로 통합하여 검색
+        find {{ apache_directories | join(' ') }} -type f \( \
+        {% for pattern in unnecessary_patterns %}
+        -name "{{ pattern }}" {% if not loop.last %}-o {% endif %}
+        {% endfor %}
+        \) 2>/dev/null | grep .
+      register: unnecessary_files_check
+      changed_when: false
+      failed_when: false
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        vulnerable_files: "{{ unnecessary_files_check.stdout_lines | default([]) | unique | sort }}"
+        is_vulnerable: "{{ (unnecessary_files_check.stdout_lines | default([]) | length) > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+        
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (불필요한 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
+        
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "Apache2 불필요한 파일 존재 여부 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "Apache2 관련 디렉터리에서 보안상 위험하거나 불필요한 파일들이 발견되었습니다." if is_vulnerable else "Apache2 관련 디렉터리에서 불필요한 파일이 발견되지 않았습니다.",
+                "vulnerable_files_found": vulnerable_files
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes        
+        
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 자동 조치 건너뛰기 알림
+      ansible.builtin.debug:
+        msg: "이 항목은 시스템에 따라 정상 파일이 포함될 수 있어 자동 조치를 수행하지 않습니다. 아래 목록을 확인 후 직접 조치해야 합니다."
+      when: is_vulnerable
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록 (수동 조치 필요)
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: ["자동 조치 미수행 (수동 조치 필요)"]
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          발견된 파일 목록:
+          {{ vulnerable_files | to_nice_yaml(indent=2) }}
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': false,
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if is_vulnerable else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+      when: is_vulnerable or not is_vulnerable # 양호할 때도 최종 보고서는 완성        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        

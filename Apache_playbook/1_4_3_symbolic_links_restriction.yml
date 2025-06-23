@@ -1,0 +1,172 @@
+---
+- name: Apache 심볼릭 링크 및 Aliases 사용 제한 진단 및 조치
+  hosts: PostWebServers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "apache_symlinks_restriction.yml"
+    result_json_path: "/tmp/security_report_apache_symlinks_restriction.json"
+    manual_remediation_guide: "Apache 설정 파일의 http 블록 내에 'disable_symlinks off;' 설정을 추가하십시오. 또한, 'alias' 지시어는 경로 조작에 취약할 수 있으므로 'root' 지시어로 대체하는 것을 권장합니다."
+    apache_config_dir: "/etc/apache2"
+    apache_main_config: "/etc/apache2/apache2.conf"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (Apache 설치 여부)
+    # ----------------------------------------------------------------
+    - name: Apache 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which apache2
+      register: apache_installed
+      changed_when: false
+      failed_when: false
+
+    - name: Apache 미설치 시 작업 종료
+      when: apache_installed.rc != 0
+      block:
+        - name: Nginx 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "Apache가 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+      
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: Options Indexes FollowSymLinks 설정 여부 진단
+      ansible.builtin.shell: "grep -r -q -E '^\\s*Options\\s+Indexes\\s+FollowSymLinks' {{ apache_config_dir }}"
+      register: followsymlinks_check
+      changed_when: false
+      failed_when: false # grep이 못찾아도(rc=1) 오류가 아님
+
+    - name: alias 지시어 사용 여부 진단
+      ansible.builtin.shell: "grep -r -i -E '^[[:space:]]*Alias[[:space:]]+' {{ apache_config_dir }} 2>/dev/null | grep -v '#'"
+      register: alias_usage_check
+      changed_when: false
+      failed_when: false
+      
+    - name: alias 지시어가 탐지된 파일 경로 저장
+      ansible.builtin.set_fact: 
+        alias_detected_files: "{{ alias_usage_check.stdout_lines | map('regex_replace', '^(.*?):.*', '\\1') | unique | list }}"
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ (followsymlinks_check.rc != 0) or (alias_usage_check.stdout_lines | length > 0) }}" # 'Options Indexes FollowSymLinks'가 없으면(rc=1) 취약
+        alias_usages: "{{ alias_usage_check.stdout_lines | default([]) | unique }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 ('Options Index FollowSymLinks' 설정또는  Alias설정이 있습니다 ){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "Apache 심볼릭 링크 및 Aliases 사용 제한 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "심볼릭 링크 관련 보안 설정(Options Index FollowSymLinks)설정 또는 Alias설정이 있습니다.." if is_vulnerable else "심볼릭 링크, Alias 관련 보안 설정이 양호합니다.",
+                "alias_directive_found": alias_usages | length > 0,
+                "alias_directive_details": alias_usages
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 조치 블록 (취약한 경우에만 실행)
+      when: is_vulnerable
+      block:
+        - name: apache2.conf 파일에 'Options Indexes FollowSymLinks'에서 Indexes 설정 제거
+          ansible.builtin.lineinfile:
+            path: "{{ apache_main_config }}"
+            regexp: '^\\s*Options\\s+Indexes\\s+FollowSymLinks'
+            line: '    Options FollowSymLinks'
+            backup: yes
+          register: r_config_change
+          notify: Reload apache service
+
+        - name: Alias 지시어 주석 처리
+          ansible.builtin.lineinfile:
+            path: "{{ item }}"
+            regexp: '^([[:space:]]*)(Alias[[:space:]]+)'
+            line: '\1# \2'
+            backrefs: yes
+            state: present
+            backup: yes
+          loop: "{{ alias_detected_files }}"
+          notify: Reload apache service
+
+
+        - name: 핸들러 즉시 실행
+          ansible.builtin.meta: flush_handlers
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ r_config_change.changed | default(false) or r_alias_change.changed | default(false) }}"
+        remediation_tasks_performed: >-
+          {{ 
+            (['apache2.conf에 `Options Indexes FollowSymLinks`에서 Indexes제거'] if r_config_change.changed | default(false) else []) 
+            + 
+            (['Alias 지시어가 있는 파일들에서 Alias 주석 처리'] if r_alias_change.changed | default(false) else []) 
+          }}
+      when: is_vulnerable
+    
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+    
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if (is_vulnerable and not (remediation_done | default(false))) else '',
+              'alias_files_modified': alias_detected_files | default([]),
+              'alias_lines_commented': r_alias_change.changed | default(false)
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+  # ----------------------------------------------------------------
+  # 핸들러: 조치 시 문법 검사 및 서비스 재시작
+  # ----------------------------------------------------------------
+  handlers:
+  - name: Reload apache service
+    ansible.builtin.systemd:
+      name: apache2
+      state: reloaded
