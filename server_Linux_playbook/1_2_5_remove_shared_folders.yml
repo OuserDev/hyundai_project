@@ -1,6 +1,6 @@
 ---
 - name: 진단 및 조치 - 불필요한 공유 폴더(NFS, Samba) 점검
-  hosts: target_server_PC
+  hosts: target_servers
   become: yes
   gather_facts: yes
 

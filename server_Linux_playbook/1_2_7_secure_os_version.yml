@@ -1,6 +1,6 @@
 ---
 - name: 진단 및 조치 - 안전한 버전의 OS 사용 (최신 보안 패치 점검)
-  hosts: target_server_PC
+  hosts: target_servers
   become: yes
   gather_facts: yes
 
