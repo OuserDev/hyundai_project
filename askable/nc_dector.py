@@ -49,6 +49,11 @@ def kill_process_using_port(port):
             continue
 
 # 수신 메시지 파싱 및 ansible 호출
+# 수신 메시지 형식은
+# [프로토콜] 키워드: 공격자 ip로 구성
+# [fail2ban] 브루트 포스 탐지: 192.168.55.3 on sshd
+
+# [PSAD] 스캐닝 탐지: 192.168.55.3
 def process_message(message):
     # fail2ban 메시지
     m1 = re.search(r'\[fail2ban\] 브루트 포스 탐지: ([\d\.]+) on (\w+)', message)
