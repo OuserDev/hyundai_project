@@ -1,6 +1,6 @@
 ---
 - name: Apache 웹 서비스 영역 진단
-  hosts: PostWebServers
+  hosts: target_servers
   become: yes
   vars:
     # sites-available 디렉터리의 모든 파일을 확인

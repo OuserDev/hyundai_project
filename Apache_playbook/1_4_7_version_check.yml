@@ -1,40 +1,17 @@
----
-- name: Apache 불필요한 파일 존재 여부 진단
+- name: Apache 최신 버전 사용 여부 진단
   hosts: target_servers
   become: yes
   gather_facts: yes
-  
+
   # 1. 변수 정의
-    vars:
-    playbook_name: "apache_unnecessary_files_check.yml"
-    result_json_path: "/tmp/security_report_apache_unnecessary_files.json"
-    manual_remediation_guide: "발견된 불필요한 파일(백업, 임시, 테스트 파일 등)을 검토 후 즉시 삭제하거나 안전한 곳으로 이동시키십시오. 특히 설정 디렉터리의 실행 파일과 웹 경로의 정보 노출 파일(phpinfo.php 등)은 즉시 제거해야 합니다."
-    # --- 점검 대상 및 파일 패턴 정의 ---
-    apache_directories: ["/etc/apache2", "/var/log/apache2", "/var/www", "/usr/share/apache2"]
-    unnecessary_patterns:
-      - "*.old"
-      - "*.bak"
-      - "*.backup"
-      - "*.orig"
-      - "*.save"
-      - "*.tmp"
-      - "*.temp"
-      - "*~"
-      - "*.swp"
-      - "*.swo"
-      - "#*#"
-      - ".#*"
-      - "*.test"
-      - "test.*"
-      - "*.example"
-      - "example.*"
-      - "phpinfo.php"
-      - "info.php"
-      - "test.php"
-      - "*.dist"
-      - "*.php"
-      - "*.sh"
-      - "*.cgi"
+  vars:
+    playbook_name: "apache_version_check.yml"
+    result_json_path: "/tmp/security_report_apache_version_check.json"
+    manual_remediation_guide: >-
+      최신 버전의 Apache로 업그레이드하십시오.
+      [주의] 업그레이드는 민감한 작업이므로, 반드시 사전에 데이터를 백업하고 테스트 환경에서 충분히 검증한 후 진행해야 합니다.
+      - Debian/Ubuntu: sudo apt-get update && sudo apt-get install apache2
+      - RedHat/CentOS: sudo yum update apache2
 
   tasks:
     # ----------------------------------------------------------------
@@ -46,10 +23,10 @@
       changed_when: false
       failed_when: false
 
-    - name: Nginx 미설치 시 작업 종료
+    - name: Apache 미설치 시 작업 종료
       when: apache_installed.rc != 0
       block:
-        - name: Nginx 미설치 메시지 출력
+        - name: Apache 미설치 메시지 출력
           ansible.builtin.debug:
             msg: "Apache가 설치되어 있지 않아 진단을 건너뜁니다."
         - name: 플레이북 실행 종료
@@ -58,45 +35,67 @@
     # ----------------------------------------------------------------
     # 2. 진단
     # ----------------------------------------------------------------
-    - name: 불필요한 파일 통합 검색
+    - name: Apache 업그레이드 가능 여부 진단 (OS별)
       ansible.builtin.shell: |
-        # 여러 패턴을 하나의 find 명령어로 통합하여 검색
-        find {{ apache_directories | join(' ') }} -type f \( \
-        {% for pattern in unnecessary_patterns %}
-        -name "{{ pattern }}" {% if not loop.last %}-o {% endif %}
-        {% endfor %}
-        \) 2>/dev/null | grep .
-      register: unnecessary_files_check
+        if [ "{{ ansible_facts['os_family'] }}" = "Debian" ]; then
+            apt-get update >/dev/null 2>&1
+            apt list --upgradable 2>/dev/null | grep -q "^apache2/"
+        elif [ "{{ ansible_facts['os_family'] }}" = "RedHat" ]; then
+            yum check-update -q apache2 >/dev/null 2>&1
+            if [ $? -eq 100 ]; then exit 0; else exit 1; fi
+        else
+            exit 2
+        fi
+      register: upgrade_check
       changed_when: false
       failed_when: false
 
     - name: 취약 여부 종합 판단
       ansible.builtin.set_fact:
-        vulnerable_files: "{{ unnecessary_files_check.stdout_lines | default([]) | unique | sort }}"
-        is_vulnerable: "{{ (unnecessary_files_check.stdout_lines | default([]) | length) > 0 }}"
+        is_vulnerable: "{{ upgrade_check.rc == 0 }}"
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: 현재 및 사용 가능한 버전 정보 확인 (보고서용)
+      ansible.builtin.shell: |
+        CURRENT_VER=$(apache2 -v 2>&1 | awk -F'/' '{print $2}')
+        AVAILABLE_VER="N/A"
+        if [ "{{ is_vulnerable }}" = "True" ]; then
+            if [ "{{ ansible_facts['os_family'] }}" = "Debian" ]; then
+                AVAILABLE_VER=$(apt list --upgradable 2>/dev/null | grep "^apache2/" | awk '{print $2}')
+            elif [ "{{ ansible_facts['os_family'] }}" = "RedHat" ]; then
+                AVAILABLE_VER=$(yum info apache2 2>/dev/null | grep -E "^Version\s*:" | awk '{print $3}')
+            fi
+        fi
+        echo "{\"current_version\": \"$CURRENT_VER\", \"available_version\": \"$AVAILABLE_VER\"}"
+      register: version_info
+      changed_when: false
+
+    - name: 버전 정보 파싱
+      ansible.builtin.set_fact:
+        version_data: "{{ version_info.stdout | from_json }}"
         
     # ----------------------------------------------------------------
     # 3. 진단 결과 보고
     # ----------------------------------------------------------------
     - name: 진단 결과 콘솔 출력
       ansible.builtin.debug:
-        msg: "진단 결과: {% if is_vulnerable %}취약 (불필요한 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
-        
+        msg: "진단 결과: {% if is_vulnerable %}취약 (최신 버전으로 업그레이드 가능합니다){% else %}양호 (최신 버전 사용 중){% endif %}"
+
     - name: 초기 JSON 보고서 생성 및 저장
       ansible.builtin.copy:
         content: |
           {{
             {
               "playbook_name": playbook_name,
-              "task_description": "Apache2 불필요한 파일 존재 여부 점검",
+              "task_description": "Apache 최신 버전 사용 여부 점검",
               "diagnosis_result": "취약" if is_vulnerable else "양호",
               "is_vulnerable": is_vulnerable,
               "timestamp": report_timestamp,
               "hostname": inventory_hostname,
               "vulnerability_details": {
-                "reason": "Apache2 관련 디렉터리에서 보안상 위험하거나 불필요한 파일들이 발견되었습니다." if is_vulnerable else "Apache2 관련 디렉터리에서 불필요한 파일이 발견되지 않았습니다.",
-                "vulnerable_files_found": vulnerable_files
+                "reason": "보안 패치가 적용된 최신 버전의 Apache를 사용하고 있지 않습니다." if is_vulnerable else "최신 버전의 Apache를 사용하고 있습니다.",
+                "current_version": version_data.current_version,
+                "available_version": version_data.available_version if is_vulnerable else ""
               },
               "remediation_tasks_performed": []
             } | to_nice_json
@@ -105,13 +104,13 @@
         mode: '0644'
       delegate_to: localhost
       become: yes        
-        
+      
     # ----------------------------------------------------------------
     # 4. 조치
     # ----------------------------------------------------------------
     - name: 자동 조치 건너뛰기 알림
       ansible.builtin.debug:
-        msg: "이 항목은 시스템에 따라 정상 파일이 포함될 수 있어 자동 조치를 수행하지 않습니다. 아래 목록을 확인 후 직접 조치해야 합니다."
+        msg: "이 항목은 안정성 위험이 높아 자동 조치를 수행하지 않습니다. 아래의 수동 조치가 필요합니다."
       when: is_vulnerable
 
     # ----------------------------------------------------------------
@@ -131,8 +130,6 @@
           --------------------------------------------------
           [수동 조치 권고]
           {{ manual_remediation_guide }}
-          발견된 파일 목록:
-          {{ vulnerable_files | to_nice_yaml(indent=2) }}
           --------------------------------------------------
           {% endif %}
 
@@ -151,20 +148,5 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
-      when: is_vulnerable or not is_vulnerable # 양호할 때도 최종 보고서는 완성        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
+      become: yes      
         
