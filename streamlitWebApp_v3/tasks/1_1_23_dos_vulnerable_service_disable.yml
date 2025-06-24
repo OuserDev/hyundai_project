@@ -1,0 +1,170 @@
+---
+- name: 진단 및 조치 - DoS 공격에 취약한 서비스 비활성화
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 서비스 목록 ---
+    dos_services:
+      - echo
+      - discard
+      - daytime
+      - chargen
+    # systemd는 .socket 접미사 사용
+    dos_services_systemd:
+      - echo.socket
+      - discard.socket
+      - daytime.socket
+      - chargen.socket
+    # xinetd는 stream/dgram 접미사 사용
+    dos_services_xinetd:
+      - echo-stream
+      - echo-dgram
+      - discard-stream
+      - discard-dgram
+      - daytime-stream
+      - daytime-dgram
+      - chargen-stream
+      - chargen-dgram
+
+    # --- 설정 파일 ---
+    inetd_config: "/etc/inetd.conf"
+    xinetd_dir: "/etc/xinetd.d"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_1_23_dos_vulnerable_service_disable.yml"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 진단 2.1: systemd로 서비스가 활성화되어 있는지 확인
+    - name: systemd 서비스 상태 확인
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      loop: "{{ dos_services_systemd }}"
+      register: systemd_check_results
+      ignore_errors: true
+
+    # 진단 2.2: xinetd로 서비스가 활성화되어 있는지 확인
+    - name: xinetd 설정 파일 확인
+      ansible.builtin.shell: "grep -qE '^\\s*disable\\s*=\\s*no' {{ xinetd_dir }}/{{ item }}"
+      loop: "{{ dos_services }}"
+      register: xinetd_check_results
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    # 진단 2.3: inetd로 서비스가 활성화되어 있는지 확인
+    - name: inetd 설정 파일 확인
+      ansible.builtin.shell: "grep -qE '^\\s*({{ dos_services | join('|') }})\\s+' {{ inetd_config }}"
+      register: inetd_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    # 개별 취약점 여부 판단
+    - name: 개별 취약점 여부 판단
+      ansible.builtin.set_fact:
+        systemd_vuln_list: "{{ systemd_check_results.results | selectattr('status.ActiveState', 'equalto', 'active') | map(attribute='item') | list }}"
+        xinetd_vuln_list: "{{ xinetd_check_results.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+        is_inetd_vuln: "{{ inetd_check.rc == 0 if 'rc' in inetd_check else false }}"
+
+    # 최종 취약 여부 종합 판단
+    - name: 최종 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ (systemd_vuln_list | length > 0) or (xinetd_vuln_list | length > 0) or is_inetd_vuln }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (DoS 취약 서비스 활성화됨){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "DoS 공격에 취약한 서비스 비활성화",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "DoS 공격에 취약한 서비스(echo, discard, daytime, chargen)가 활성화되어 있습니다." if is_vulnerable else "DoS 취약 서비스가 모두 비활성화되어 있습니다.",
+                "vulnerable_services": {
+                  "systemd": systemd_vuln_list,
+                  "xinetd": xinetd_vuln_list,
+                  "inetd_detected": is_inetd_vuln
+                }
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    - name: DoS 취약 서비스 조치 블록
+      block:
+        - name: systemd 서비스 비활성화
+          ansible.builtin.systemd:
+            name: "{{ item }}"
+            enabled: no
+            state: stopped
+          loop: "{{ systemd_vuln_list }}"
+          register: r_systemd
+        
+        - name: xinetd 서비스 비활성화
+          ansible.builtin.lineinfile:
+            path: "{{ xinetd_dir }}/{{ item }}"
+            regexp: '^\s*disable\s*='
+            line: '        disable         = yes'
+            backup: yes
+          loop: "{{ xinetd_vuln_list }}"
+          register: r_xinetd
+
+        - name: inetd 서비스 비활성화 (주석 처리)
+          ansible.builtin.lineinfile:
+            path: "{{ inetd_config }}"
+            regexp: '^(\s*({{ dos_services | join("|") }})\s+.*)'
+            line: '#\1'
+            backrefs: yes
+            backup: yes
+          when: is_inetd_vuln
+          register: r_inetd
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: >-
+          {{ (r_systemd.results | selectattr('changed', 'equalto', true) | list | length > 0) or
+             (r_xinetd.results | selectattr('changed', 'equalto', true) | list | length > 0) or
+             (r_inetd.changed | default(false)) }}
+        remediation_tasks_performed: >-
+          {{ (['systemd 서비스 비활성화'] if (r_systemd.results | selectattr('changed', 'equalto', true) | list | length > 0) else []) +
+             (['xinetd 설정 변경'] if (r_xinetd.results | selectattr('changed', 'equalto', true) | list | length > 0) else []) +
+             (['inetd 설정 주석 처리'] if (r_inetd.changed | default(false)) else []) }}
+      when: is_vulnerable
+
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else '조치 실패',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode and is_vulnerable

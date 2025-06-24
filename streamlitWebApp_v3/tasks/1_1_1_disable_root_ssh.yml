@@ -1,0 +1,182 @@
+---
+- name: 진단 및 조치 - root 계정 SSH 및 Telnet 원격 접속 제한
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # --- 변수 정의 ---
+    sshd_config_path: "/etc/ssh/sshd_config"
+    expected_ssh_line: "PermitRootLogin no"
+    vulnerable_ssh_regexp: '^PermitRootLogin\s+yes'
+    remediation_ssh_regexp: '^#?PermitRootLogin\s+.*'
+    securetty_path: "/etc/securetty"
+    vulnerable_securetty_regexp: '^pts/\d+'
+    remediation_tasks_performed: []
+
+  tasks:
+    # --- 1. 진단 수행 ---
+    
+    # SSH 설정 파일 존재 확인
+    - name: SSH 설정 파일 확인
+      ansible.builtin.stat:
+        path: "{{ sshd_config_path }}"
+      register: sshd_config_stat
+      changed_when: false
+
+    # SSH 취약점 진단 (grep)
+    - name: SSH 취약점 진단
+      ansible.builtin.command:
+        cmd: "grep -E '{{ vulnerable_ssh_regexp }}' {{ sshd_config_path }}"
+      register: grep_check_ssh
+      failed_when: grep_check_ssh.rc > 1
+      changed_when: false
+      ignore_errors: true
+      when: sshd_config_stat.stat.exists
+
+    # Telnet 설정 파일 존재 확인
+    - name: Telnet 설정 파일 확인
+      ansible.builtin.stat:
+        path: "{{ securetty_path }}"
+      register: securetty_stat
+      changed_when: false
+      ignore_errors: true
+
+    # Telnet 취약점 진단 (grep)
+    - name: Telnet 취약점 진단
+      ansible.builtin.command:
+        cmd: "grep -E '{{ vulnerable_securetty_regexp }}' {{ securetty_path }}"
+      register: grep_check_telnet
+      failed_when: grep_check_telnet.rc > 1
+      changed_when: false
+      ignore_errors: true
+      when: securetty_stat.stat.exists
+
+    # 취약 여부 종합 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_ssh_vulnerable: "{{ grep_check_ssh.rc == 0 if 'rc' in grep_check_ssh else false }}"
+        is_telnet_vulnerable: "{{ grep_check_telnet.rc == 0 if 'rc' in grep_check_telnet else false }}"
+        is_vulnerable: >-
+          {{ (grep_check_ssh.rc == 0 if 'rc' in grep_check_ssh else false) or
+             (grep_check_telnet.rc == 0 if 'rc' in grep_check_telnet else false) }}
+
+    # --- 2. 진단 결과 보고 (초기) ---
+
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          진단결과: {% if is_vulnerable %}취약{% else %}양호{% endif %}
+          {% if is_ssh_vulnerable %}
+            - SSH: root 계정 원격 접속이 허용되어 있습니다.
+          {% endif %}
+          {% if is_telnet_vulnerable %}
+            - Telnet: root 계정 원격 접속이 허용되어 있습니다.
+          {% endif %}
+
+    # JSON 보고서 데이터 생성
+    - name: JSON 보고서 초기 데이터 생성
+      ansible.builtin.set_fact:
+        current_report_data:
+          playbook_name: "1_1_1_disable_root_ssh.yml"
+          task_description: "Root 계정 SSH 및 Telnet 원격 접속 제한"
+          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
+          is_vulnerable: "{{ is_vulnerable }}"
+          is_ssh_vulnerable: "{{ is_ssh_vulnerable }}"
+          is_telnet_vulnerable: "{{ is_telnet_vulnerable }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          hostname: "{{ inventory_hostname }}"
+          vulnerability_details: >-
+            {{
+              ({
+                'ssh_reason': "SSH 설정에 root 계정 원격 접속이 허용되어 있거나 잘못 설정되었습니다."
+              } if is_ssh_vulnerable else {}) | combine(
+              {
+                'telnet_reason': "securetty 파일에 'pts' 터미널이 명시되어 있어 Telnet을 통한 root 접속이 가능할 수 있습니다."
+              } if is_telnet_vulnerable else {})
+            }}
+
+    # JSON 보고서 파일로 저장
+    - name: 초기 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false      
+
+    # --- 3. 조치 수행 ---
+
+    # SSH 취약점 조치 적용
+    - name: SSH 설정 조치
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: "{{ remediation_ssh_regexp }}"
+        line: "{{ expected_ssh_line }}"
+        state: present
+        backup: yes
+      register: sshd_line_change
+      when: is_ssh_vulnerable
+
+    # SSH 서비스 재시작
+    - name: SSH 서비스 재시작
+      ansible.builtin.service:
+        name: "{{ 'sshd' if ansible_facts['os_family'] in ['RedHat', 'CentOS'] else 'ssh' }}"
+        state: restarted
+      register: sshd_service_restart
+      when: sshd_line_change.changed
+
+    # Telnet 취약점 조치 적용
+    - name: Telnet 설정 조치
+      ansible.builtin.lineinfile:
+        path: "{{ securetty_path }}"
+        regexp: '^{{ vulnerable_securetty_regexp }}'
+        state: absent
+        backup: yes
+      register: securetty_pts_remove
+      when: is_telnet_vulnerable
+
+    # --- 4. 조치 결과 보고 ---
+
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_tasks_performed: >-
+          {{ remediation_tasks_performed +
+             (['SSH 설정 변경'] if sshd_line_change.changed else []) +
+             (['SSH 서비스 재시작'] if sshd_service_restart.changed else []) +
+             (['Telnet 설정 변경'] if securetty_pts_remove.changed else [])
+          }}
+      when: sshd_line_change.changed or sshd_service_restart.changed or securetty_pts_remove.changed
+
+    # 조치 결과를 콘솔에 출력
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if sshd_line_change.changed or securetty_pts_remove.changed %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패(수동 처리 요망){% endif %}
+          수행된 조치 태스크: {% if remediation_tasks_performed | length > 0 %}{{ remediation_tasks_performed | join(', ') }}{% else %}없음{% endif %}
+      when: not ansible_check_mode
+
+    # JSON 보고서에 조치 결과 추가
+    - name: JSON 보고서에 조치 결과 추가
+      ansible.builtin.set_fact:
+        current_report_data: "{{ current_report_data | combine({
+            'remediation_applied': sshd_line_change.changed or securetty_pts_remove.changed,
+            'remediation_result': '조치 완료' if (sshd_line_change.changed or securetty_pts_remove.changed) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
+            'remediation_timestamp': ansible_date_time.iso8601,
+            'remediation_tasks_performed': remediation_tasks_performed
+          }, recursive=True) }}"
+      when: not ansible_check_mode and is_vulnerable
+
+    # 최종 JSON 보고서 파일 덮어쓰기
+    - name: 최종 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      when: not ansible_check_mode and is_vulnerable
+      delegate_to: localhost
+      become: false
