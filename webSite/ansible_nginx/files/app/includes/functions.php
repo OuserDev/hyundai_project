@@ -79,22 +79,89 @@ function validateUsername($username) {
     return preg_match('/^[a-zA-Z0-9_]{3,20}$/', $username);
 }
 
-/////////////////////File Upload Funcs/////////////////////
+/////////////////////Nginx 특화 보안 함수들/////////////////////
+
+/**
+ * Nginx 프록시 환경에서 실제 클라이언트 IP 가져오기
+ */
+function getNginxRealIP() {
+    $headers = [
+        'HTTP_X_FORWARDED_FOR',
+        'HTTP_X_REAL_IP',
+        'HTTP_CLIENT_IP',
+        'REMOTE_ADDR'
+    ];
+    
+    foreach ($headers as $header) {
+        if (!empty($_SERVER[$header])) {
+            $ips = explode(',', $_SERVER[$header]);
+            $ip = trim($ips[0]);
+            
+            // 유효한 IP인지 검증
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return $ip;
+            }
+        }
+    }
+    
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
+/**
+ * Nginx 로그 형식에 맞춘 로깅
+ */
+function logToNginx($message, $level = 'warn') {
+    $timestamp = date('Y/m/d H:i:s');
+    $pid = getmypid();
+    $client_ip = getNginxRealIP();
+    
+    $formatted_message = "{$timestamp} [{$level}] {$pid}#0: [client {$client_ip}] {$message}";
+    error_log($formatted_message);
+}
+
+/////////////////////File Upload Funcs (Nginx 최적화)/////////////////////
+
+/**
+ * 디스크 용량 검사 (Nginx 환경 최적화)
+ */
+function checkDiskSpace($path, $required_space = 0) {
+    $free_bytes = disk_free_space($path);
+    $total_bytes = disk_total_space($path);
+    
+    if ($free_bytes === false || $total_bytes === false) {
+        throw new Exception('디스크 용량 정보를 가져올 수 없습니다.');
+    }
+    
+    return [
+        'free_bytes' => $free_bytes,
+        'total_bytes' => $total_bytes,
+        'free_mb' => round($free_bytes / 1024 / 1024, 2),
+        'total_mb' => round($total_bytes / 1024 / 1024, 2),
+        'usage_percent' => round((($total_bytes - $free_bytes) / $total_bytes) * 100, 2),
+        'has_space' => $free_bytes > $required_space
+    ];
+}
+
+/**
+ * 업로드 디렉토리 생성 (Nginx 보안 강화)
+ */
 function ensureUploadDirectories(){
     $directories = [UPLOAD_PATH, IMAGES_PATH, FILES_PATH];
     
     foreach ($directories as $dir) {
-        error_log("dir value : $dir");
+        logToNginx("Creating directory: $dir", 'info');
+        
         if(!is_dir($dir)){
             if(!mkdir($dir, 0755, true)){
-                throw new Exception("can not create upload directory");
+                throw new Exception("업로드 디렉토리를 생성할 수 없습니다: $dir");
             }
         }
 
         // Nginx용 index.html 파일 생성 (디렉토리 리스팅 방지)
         $index_file = $dir . 'index.html';
         if(!file_exists($index_file)){
-            file_put_contents($index_file, "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>Directory access is forbidden.</h1></body></html>");
+            $content = "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>Directory access is forbidden.</h1></body></html>";
+            file_put_contents($index_file, $content);
         }
     }
 }
@@ -132,8 +199,28 @@ function validateFileType($file, $type = 'image'){
     return in_array($extension, $allowed_extensions);
 }
 
+/**
+ * 이미지 업로드 (Nginx X-Accel-Redirect 지원)
+ */
 function uploadImage($file) {
+    $min_free_space = 5 * 1024 * 1024;
+    
     ensureUploadDirectories();
+    
+    $space_info = checkDiskSpace(IMAGES_PATH, $min_free_space + $file['size']);
+    logToNginx("Image upload - Disk usage: {$space_info['usage_percent']}%, Free space: {$space_info['free_mb']}MB", 'info');
+    
+    if (!$space_info['has_space']) {
+        throw new Exception(
+            "서버 디스크 용량이 부족합니다. " .
+            "여유공간: {$space_info['free_mb']}MB, " .
+            "필요공간: " . round(($min_free_space + $file['size']) / 1024 / 1024, 2) . "MB"
+        );
+    }
+    
+    if ($space_info['usage_percent'] > 90) {
+        logToNginx("WARNING: 디스크 사용률이 {$space_info['usage_percent']}%입니다.", 'warn');
+    }
     
     // 기본 검증
     if ($file['error'] !== UPLOAD_ERR_OK) {
@@ -141,7 +228,7 @@ function uploadImage($file) {
     }
     
     if ($file['size'] > MAX_IMAGE_SIZE) {
-        throw new Exception('이미지 파일 크기는 5MB를 초과할 수 없습니다.');
+        throw new Exception('이미지 파일 크기는 ' . formatFileSize(MAX_IMAGE_SIZE) . '를 초과할 수 없습니다.');
     }
     
     if (!validateFileType($file, 'image')) {
@@ -159,6 +246,8 @@ function uploadImage($file) {
     // 이미지 리사이즈 (선택사항)
     resizeImage($file_path, 1200, 800);
     
+    logToNginx("Image uploaded successfully: {$stored_name}", 'info');
+    
     return [
         'original_name' => $file['name'],
         'stored_name' => $stored_name,
@@ -166,15 +255,29 @@ function uploadImage($file) {
         'file_size' => filesize($file_path),
         'mime_type' => mime_content_type($file_path)
     ];
-} 
+}
 
+/**
+ * 파일 업로드 (Nginx 최적화)
+ */
 function uploadFiles($file) {
     debugFileUpload($file);
+    $min_free_space = 10 * 1024 * 1024;
     
     try {
         ensureUploadDirectories();
+        $space_info = checkDiskSpace(FILES_PATH, $min_free_space + $file['size']);
+        
+        if ($space_info['usage_percent'] > 90) {
+            logToNginx("WARNING: 파일 업로드 - 디스크 사용률이 {$space_info['usage_percent']}%입니다.", 'warn');
+        }
+        
+        // 위험 수준에서는 업로드 차단
+        if ($space_info['usage_percent'] > 95) {
+            throw new Exception("디스크 사용률이 {$space_info['usage_percent']}%로 위험 수준입니다. 업로드를 중단합니다.");
+        }
     } catch (Exception $e) {
-        error_log("Directory creation error: " . $e->getMessage());
+        logToNginx("Directory creation error: " . $e->getMessage(), 'error');
         throw new Exception('업로드 디렉토리 생성 실패: ' . $e->getMessage());
     }
     
@@ -191,7 +294,7 @@ function uploadFiles($file) {
         ];
         
         $error_msg = $error_messages[$file['error']] ?? '알 수 없는 업로드 오류가 발생했습니다.';
-        error_log("Upload error detail: " . $error_msg);
+        logToNginx("Upload error: " . $error_msg, 'error');
         throw new Exception($error_msg);
     }
     
@@ -212,10 +315,12 @@ function uploadFiles($file) {
         throw new Exception('파일 저장 중 오류가 발생했습니다.');
     }
     
+    logToNginx("File uploaded successfully: {$stored_name}", 'info');
+    
     return [
         'original_name' => $file['name'],
         'stored_name' => $stored_name,
-        'file_path' => 'uploads/files/' . $stored_name, // 수정: attachments -> files
+        'file_path' => 'uploads/files/' . $stored_name,
         'file_size' => filesize($file_path),
         'mime_type' => mime_content_type($file_path)
     ];
@@ -297,7 +402,7 @@ function savePostImages($pdo, $post_id, $images) {
         ");
         $stmt->execute([
             $post_id,
-            $image['stored_name'],
+            $image['stored_name'],      // filename 컬럼에 stored_name 저장
             $image['original_name'],
             $image['file_path'],
             $image['file_size'],
@@ -371,12 +476,12 @@ function deletePostFiles($pdo, $post_id) {
 }
 
 function debugFileUpload($file) {
-    error_log("=== File Upload Debug ===");
-    error_log("File name: " . ($file['name'] ?? 'NULL'));
-    error_log("File size: " . ($file['size'] ?? 'NULL'));
-    error_log("File type: " . ($file['type'] ?? 'NULL'));
-    error_log("File error: " . ($file['error'] ?? 'NULL'));
-    error_log("File tmp_name: " . ($file['tmp_name'] ?? 'NULL'));
+    logToNginx("=== File Upload Debug ===", 'info');
+    logToNginx("File name: " . ($file['name'] ?? 'NULL'), 'info');
+    logToNginx("File size: " . ($file['size'] ?? 'NULL'), 'info');
+    logToNginx("File type: " . ($file['type'] ?? 'NULL'), 'info');
+    logToNginx("File error: " . ($file['error'] ?? 'NULL'), 'info');
+    logToNginx("File tmp_name: " . ($file['tmp_name'] ?? 'NULL'), 'info');
     
     // 업로드 오류 코드 해석
     $upload_errors = [
@@ -391,59 +496,81 @@ function debugFileUpload($file) {
     ];
     
     $error_code = $file['error'] ?? -1;
-    error_log("Upload error meaning: " . ($upload_errors[$error_code] ?? 'Unknown error'));
+    logToNginx("Upload error meaning: " . ($upload_errors[$error_code] ?? 'Unknown error'), 'info');
     
     // 디렉토리 상태 확인
-    error_log("UPLOAD_PATH exists: " . (is_dir(UPLOAD_PATH) ? 'YES' : 'NO'));
-    error_log("FILES_PATH exists: " . (is_dir(FILES_PATH) ? 'YES' : 'NO'));
-    error_log("FILES_PATH writable: " . (is_writable(FILES_PATH) ? 'YES' : 'NO'));
+    logToNginx("UPLOAD_PATH exists: " . (is_dir(UPLOAD_PATH) ? 'YES' : 'NO'), 'info');
+    logToNginx("FILES_PATH exists: " . (is_dir(FILES_PATH) ? 'YES' : 'NO'), 'info');
+    logToNginx("FILES_PATH writable: " . (is_writable(FILES_PATH) ? 'YES' : 'NO'), 'info');
     
     return true;
 }
 
-// Nginx용 추가 보안 함수들
-function getNginxRealIP() {
-    $headers = [
-        'HTTP_X_FORWARDED_FOR',
-        'HTTP_X_REAL_IP',
-        'HTTP_CLIENT_IP',
-        'REMOTE_ADDR'
-    ];
+/**
+ * Nginx X-Accel-Redirect를 사용한 파일 전송
+ */
+function serveFileWithNginx($file_path, $original_name, $mime_type) {
+    // 파일 존재 확인
+    if (!file_exists($file_path)) {
+        http_response_code(404);
+        die('파일을 찾을 수 없습니다.');
+    }
     
-    foreach ($headers as $header) {
-        if (!empty($_SERVER[$header])) {
-            $ips = explode(',', $_SERVER[$header]);
-            return trim($ips[0]);
+    $file_size = filesize($file_path);
+    
+    // 브라우저별 파일명 인코딩 처리
+    $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    
+    if (preg_match('/MSIE|Edge|Trident/', $user_agent)) {
+        // Internet Explorer / Edge
+        $encoded_filename = urlencode($original_name);
+        header("Content-Disposition: attachment; filename=\"{$encoded_filename}\"");
+    } else {
+        // Chrome, Firefox, Safari 등
+        $encoded_filename = rawurlencode($original_name);
+        if (strlen($encoded_filename) !== strlen($original_name)) {
+            // 한글이 포함된 경우
+            header("Content-Disposition: attachment; filename*=UTF-8''{$encoded_filename}");
+        } else {
+            // 영문인 경우
+            header("Content-Disposition: attachment; filename=\"{$original_name}\"");
         }
     }
     
-    return $_SERVER['REMOTE_ADDR'] ?? '';
+    // 기본 헤더 설정
+    header("Content-Type: " . $mime_type);
+    header("Content-Length: " . $file_size);
+    header("Cache-Control: private, must-revalidate");
+    header("Pragma: public");
+    header("Expires: 0");
+    
+    // Nginx X-Accel-Redirect 사용 (성능 향상)
+    $nginx_internal_path = str_replace($_SERVER['DOCUMENT_ROOT'], '/internal', $file_path);
+    header("X-Accel-Redirect: " . $nginx_internal_path);
+    header("X-Accel-Buffering: yes");
+    header("X-Accel-Charset: utf-8");
+    
+    logToNginx("File served via X-Accel-Redirect: {$original_name}", 'info');
 }
 
-function isSecureConnection() {
-    return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') 
-        || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
-        || (!empty($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443);
-}
-
-function setSecurityHeaders() {
-    // CSRF 방지
-    if (!headers_sent()) {
-        header('X-Frame-Options: DENY');
-        header('X-Content-Type-Options: nosniff');
-        header('X-XSS-Protection: 1; mode=block');
-        header('Referrer-Policy: strict-origin-when-cross-origin');
-        
-        // HTTPS인 경우 추가 보안 헤더
-        if (isSecureConnection()) {
-            header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
-        }
+/**
+ * 일반적인 파일 출력 (fallback)
+ */
+function outputFile($file_path, $file_size) {
+    $handle = fopen($file_path, 'rb');
+    if ($handle === false) {
+        throw new Exception('파일을 읽을 수 없습니다.');
     }
+    
+    // 8KB씩 읽어서 출력
+    while (!feof($handle)) {
+        echo fread($handle, 8192);
+        if (ob_get_level()) {
+            ob_flush();
+        }
+        flush();
+    }
+    
+    fclose($handle);
 }
-
-// 세션 시작 시 보안 헤더 설정
-if (session_status() == PHP_SESSION_NONE) {
-    setSecurityHeaders();
-}
-
 ?>
