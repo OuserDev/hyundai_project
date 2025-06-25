@@ -1,5 +1,5 @@
 ---
-- name: Apache 심볼릭 링크 및 Aliases 사용 제한 진단 및 조치
+- name: Apache 디렉터리 리스팅 진단 및 조치
   hosts: target_servers
   become: yes
   gather_facts: yes
@@ -35,14 +35,15 @@
     # 2. 진단
     # ----------------------------------------------------------------
     - name: Options Indexes FollowSymLinks 설정 여부 진단
-      ansible.builtin.shell: "grep -r -q -E '^\\s*Options\\s+Indexes\\s+FollowSymLinks' {{ apache_config_dir }}"
+      shell: |
+        grep -r -E '^\s*Options\s+Indexes\s+FollowSymLinks' {{ apache_main_config }} | wc -l 
       register: followsymlinks_check
       changed_when: false
       failed_when: false # grep이 못찾아도(rc=1) 오류가 아님
       
     - name: 취약 여부 종합 판단
       ansible.builtin.set_fact:
-        is_vulnerable: "{{ (followsymlinks_check.rc != 0) }}" 
+        is_vulnerable: "{{ (followsymlinks_check.stdout | int) > 0 }}" 
         # 'Options Indexes FollowSymLinks'가 있으면(rc=1) 취약
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
       
@@ -84,7 +85,7 @@
         - name: apache2.conf 파일에 'Options Indexes FollowSymLinks'에서 Indexes 설정 제거
           ansible.builtin.lineinfile:
             path: "{{ apache_main_config }}"
-            regexp: '^\\s*Options\\s+Indexes\\s+FollowSymLinks'
+            regexp: '^\s*Options\s+Indexes\s+FollowSymLinks'
             line: '    Options FollowSymLinks'
             backup: yes
           register: r_config_change

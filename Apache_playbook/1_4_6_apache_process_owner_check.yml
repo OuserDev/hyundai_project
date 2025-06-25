@@ -34,15 +34,19 @@
           ansible.builtin.meta: end_play
           
     - name: envvar 파일에 APACHE_RUN_USER,GROUP 설정 여부 진단
-      shell: "grep -E '^\\s*(export\\s+)?APACHE_RUN_(USER|GROUP)=www-data\\s*$' {{ apache_main_config }}"
+      shell: |
+        grep -E '^\s*(export\s+)?APACHE_RUN_(USER|GROUP)=www-data\s*$' {{ apache_main_config }} | wc -l  
       register: user_root_check
       changed_when: false
       failed_when: false # grep이 있다면(rc=1) 오류가 아님
       
+    - name: debug print
+      debug:
+        msg: "{{ user_root_check }}"  
+      
     - name: 취약 여부 종합 판단
       ansible.builtin.set_fact:
-        is_vulnerable: "{{ user_root_check.stdout_lines | length < 1 }}" 
-        # 'APACHE_RUN_USER,GROUP' 값이 www-data이면 (lines > 0) 양호 
+        is_vulnerable: "{{ (user_root_check.stdout | int) < 1 }}" 
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
         
     # ----------------------------------------------------------------
@@ -93,7 +97,7 @@
           notify: Reload apache service
           when: is_vulnerable
 
-        - name: {{ apache_user }} 계정의 쉘을 nologin으로 변경
+        - name: "{{ apache_user }} 계정의 쉘을 nologin으로 변경"
           ansible.builtin.user:
             name: "{{ apache_user }}"
             shell: /usr/sbin/nologin

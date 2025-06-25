@@ -1,7 +1,7 @@
 - name: Apache LimitRequestBody 설정 진단 및 조치
   hosts: target_servers
   become: yes
-  gather_facts: no
+  gather_facts: yes
 
   # 1. 변수 정의
   vars:
@@ -9,7 +9,7 @@
     result_json_path: "/tmp/security_report_apache_limit_request_body.json"
     manual_remediation_guide: "Apache 설정 파일(apache2.conf)의 Directory 블록에 'LimitRequestBody 10240000'과 같이 업로드 크기 제한 설정을 추가하십시오. (10M은 예시이며, 서비스 환경에 맞게 조절)"
     apache_main_config: "/etc/apache2/apache2.conf"
-    remediation_value: "20480000"
+    remediation_value: "10240000"
     
   
   tasks:
@@ -35,16 +35,41 @@
     # 2. 진단
     # ----------------------------------------------------------------
 
-    - name: apache2.conf 파일에 LimitRequestBody 설정 여부 진단
-      shell: "grep -i -E '^\s*LimitRequestBody\s+[0-9]+' {{ apache_main_config }}"
-      register: option_check
+    - name: apache2.conf 파일에 <Directory> 옵션 라인 수 확인
+      shell: |
+        grep -i -E '^[^#]*<Directory' {{ apache_main_config }} | wc -l 
+      register: Directory_lines
+      changed_when: false
+      failed_when: false
+      
+    - name: 전체 LimitRequestBody 설정 라인 수 (주석 제외)
+      shell: |
+        sed '/^\s*#/d' {{ apache_main_config }} | grep -i -c 'LimitRequestBody' || echo "0"
+      register: limitbody_total_lines
+      changed_when: false
+      failed_when: false
+      
+    - name: 올바른 LimitRequestBody 숫자 설정 라인 수 (주석 제외)
+      shell: |
+        sed '/^\s*#/d' {{ apache_main_config }} | grep -i -c -E 'LimitRequestBody\s+[0-9]+(\s|$)' || echo "0"
+      register: limitbody_valid_lines
       changed_when: false
       failed_when: false
     
     - name: 취약 여부 종합 판단
-      set_fact:
-        is_vulnerable: "{{ option_check.rc != 0 }}" # 설정이 없으면(rc=1) 취약
+      ansible.builtin.set_fact:
+        total_Directory_count: "{{ Directory_lines.stdout | int }}" 
+        total_limitbody_count: "{{ limitbody_total_lines.stdout | int }}"
+        valid_limitbody_count: "{{ limitbody_valid_lines.stdout | int }}"
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
+        # 직접 계산으로 처리
+        is_vulnerable: >-
+          {{
+            ((limitbody_total_lines.stdout | int) > 0 and 
+             (limitbody_total_lines.stdout | int) != (limitbody_valid_lines.stdout | int)) or
+            ((Directory_lines.stdout | int) > 0 and 
+             (limitbody_total_lines.stdout | int) == 0)
+          }}
 
     # ----------------------------------------------------------------
     # 3. 진단 결과 보고
@@ -85,8 +110,8 @@
         - name: apache2.conf 파일에 'LimitRequestBody' 설정 추가
           ansible.builtin.lineinfile:
             path: "{{ apache_main_config }}"
-            regexp: '^[\s\t]*LimitRequestBody'
-            line: '    LimitRequestBody {{ remediation_value }};'
+            regexp: 'LimitRequestBody'
+            line: '        LimitRequestBody {{ remediation_value }}'
             insertafter: '^<Directory\s/[a-zA-Z/]*>'
             backup: yes
           register: r_config_change
@@ -139,12 +164,6 @@
   # ----------------------------------------------------------------
   handlers:
     - name: Reload apache service
-      block:
-        - name: Apache 설정 파일 문법 검사
-          ansible.builtin.command: apache2 -t
-          changed_when: false
-
-        - name: Apache 서비스 재시작
-          ansible.builtin.systemd:
-            name: apache2
-            state: reloaded      
+      ansible.builtin.systemd:
+        name: apache2
+        state: reloaded    
