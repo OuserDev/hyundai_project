@@ -186,6 +186,44 @@ function sanitizeForLog($input) {
     
     return substr(trim($sanitized), 0, 100);
 }
+function logAuthAttempt($event_type, $username = '', $success = false, $additional_data = []) {
+    $client_ip = getClientIP(); // 프로젝트 기존 함수 사용
+    
+    // 기본 로그 데이터 구성
+    $log_data = [
+        'timestamp' => date('Y-m-d H:i:s'),
+        'event_type' => $event_type,
+        'username_hash' => hash('sha256', $username),
+        'result' => $success ? 'SUCCESS' : 'FAILED',
+        'client_ip' => $client_ip,
+        'session_id' => substr(hash('sha256', session_id()), 0, 12),
+        'server_name' => $_SERVER['SERVER_NAME'] ?? 'localhost',
+        'request_method' => $_SERVER['REQUEST_METHOD'] ?? 'GET',
+        'user_agent_hash' => substr(hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 16)
+    ];
+    
+    // 추가 데이터 포함 (간단한 검증)
+    foreach ($additional_data as $key => $value) {
+        // 안전한 키인지 간단 체크
+        if (is_scalar($value) && is_string($key) && strlen($key) < 20 && ctype_alnum(str_replace('_', '', $key))) {
+            $safe_key = preg_replace('/[^a-zA-Z0-9_]/', '', $key);
+            $log_data[$safe_key] = sanitizeForLog((string)$value);
+        }
+    }
+    
+    // 로그 메시지 구성
+    $message_parts = [];
+    foreach ($log_data as $key => $value) {
+        $message_parts[] = "{$key}={$value}";
+    }
+    
+    $log_message = "AUTH_EVENT " . implode(' ', $message_parts);
+    
+    // 로그 기록 (프로젝트 기존 방식)
+    error_log($log_message);
+}
+
+
 function setNginxSecurityHeaders() {
     if (!headers_sent()) {
         header('X-Frame-Options: DENY');
@@ -220,7 +258,7 @@ if (isLoggedIn()) {
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // ������ SQL Injection 탐지 (POST 데이터 전체 검사)
+    // ������ SQL Injection 탐지 (POST 데이터 전체 검사)
     $sqli_result = detectAndLogSQLInjection($_POST, 'login.php');
     
     // 공격이 탐지된 경우 추가 처리
@@ -240,10 +278,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // CSRF 토큰 검증
     if (!verifyCSRFToken($csrf_token)) {
         $error = '잘못된 요청입니다.';
-        
+        // 인증 실패 로깅
+        logAuthAttempt('CSRF_FAILED', $username, false, [
+            'csrf_provided' => !empty($csrf_token)
+        ]);
     } else if (empty($username) || empty($password)) {
         $error = '사용자명과 비밀번호를 모두 입력해주세요.';
-        
+        logAuthAttempt('INCOMPLETE_INPUT', $username, false);
     } else {
         try {
             $stmt = $pdo->prepare("SELECT id, username, password FROM users WHERE username = ?");
@@ -257,15 +298,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 unset($_SESSION['csrf_token']);
                 generateCSRFToken();
-                
+                logAuthAttempt('LOGIN_SUCCESS', $username, true, [
+                    'user_id' => $user['id']
+                ]);
                 setSuccessMessage('로그인되었습니다!');
                 header("Location: dashboard.php");
                 exit();
             } else {
                 $error = '잘못된 사용자명 또는 비밀번호입니다.';
+
+                logAuthAttempt('LOGIN_FAILED', $username, false, [
+                    'user_exists' => $user !== false,
+                    'pass_length' => strlen($password)
+                ]);
             }
         } catch (PDOException $e) {
             $error = '로그인 처리 중 오류가 발생했습니다.';
+            logAuthAttempt('SYSTEM_ERROR', $username, false, [
+                'error_type' => 'PDOException'
+            ]);
+
+            error_log("Database error in login.php: " . $e->getMessage());
         }
     }
 }// CSRF 토큰 생성

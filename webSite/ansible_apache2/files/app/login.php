@@ -74,7 +74,7 @@ function detectAndLogSQLInjection($input_data, $script_name = '') {
     if (!empty($detected_patterns)) {
         $risk_level = calculateSQLInjectionRisk($detected_patterns);
         
-        // ������ Apache localhost_error.log에 기록
+        // ������ Apache localhost_error.log에 기록
         logSQLInjectionAttempt($risk_level, $detected_patterns, $script_name);
         
         // 높은 위험도일 경우 즉시 차단
@@ -189,7 +189,7 @@ function logSQLInjectionAttempt($risk_level, $patterns, $script_name = '') {
     
     $log_message = "SQL_INJECTION " . implode(' ', $message_parts);
     
-    // ������ Apache localhost_error.log에 기록
+    // ������ Apache localhost_error.log에 기록
     error_log($log_message);
 }
 
@@ -228,7 +228,42 @@ function sanitizeForLog($input) {
     
     return substr(trim($sanitized), 0, 100);
 }
-
+function logAuthAttempt($event_type, $username = '', $success = false, $additional_data = []) {
+    $client_ip = getClientIP(); // 프로젝트 기존 함수 사용
+    
+    // 기본 로그 데이터 구성
+    $log_data = [
+        'timestamp' => date('Y-m-d H:i:s'),
+        'event_type' => $event_type,
+        'username_hash' => hash('sha256', $username),
+        'result' => $success ? 'SUCCESS' : 'FAILED',
+        'client_ip' => $client_ip,
+        'session_id' => substr(hash('sha256', session_id()), 0, 12),
+        'server_name' => $_SERVER['SERVER_NAME'] ?? 'localhost',
+        'request_method' => $_SERVER['REQUEST_METHOD'] ?? 'GET',
+        'user_agent_hash' => substr(hash('sha256', $_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 16)
+    ];
+    
+    // 추가 데이터 포함 (간단한 검증)
+    foreach ($additional_data as $key => $value) {
+        // 안전한 키인지 간단 체크
+        if (is_scalar($value) && is_string($key) && strlen($key) < 20 && ctype_alnum(str_replace('_', '', $key))) {
+            $safe_key = preg_replace('/[^a-zA-Z0-9_]/', '', $key);
+            $log_data[$safe_key] = sanitizeForLog((string)$value);
+        }
+    }
+    
+    // 로그 메시지 구성
+    $message_parts = [];
+    foreach ($log_data as $key => $value) {
+        $message_parts[] = "{$key}={$value}";
+    }
+    
+    $log_message = "AUTH_EVENT " . implode(' ', $message_parts);
+    
+    // 로그 기록 (프로젝트 기존 방식)
+    error_log($log_message);
+}
 
 
 // 이미 로그인된 경우 대시보드로 리다이렉트
@@ -240,7 +275,7 @@ if (isLoggedIn()) {
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // ������ SQL Injection 탐지 (POST 데이터 전체 검사)
+    // ������ SQL Injection 탐지 (POST 데이터 전체 검사)
     $sqli_result = detectAndLogSQLInjection($_POST, 'login.php');
     
     // 공격이 탐지된 경우 추가 처리
