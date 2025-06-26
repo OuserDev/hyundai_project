@@ -70,12 +70,39 @@ render_sidebar_with_history(vulnerability_categories, filename_mapping)
 # 쿼리 파라미터 확인해서 분석 리포트 페이지 표시할지 결정
 query_params = st.query_params
 selected_report = query_params.get("report", None)
+selected_page = query_params.get("page", None)
+
+# 포트 스캐닝 페이지 라우팅
+if selected_page == "port_scanning":
+    try:
+        import dynamic_analysis
+        dynamic_analysis.main()
+        st.stop()
+    except ImportError:
+        st.error("❌ dynamic_analysis.py 모듈을 찾을 수 없습니다.")
+        if st.button("⬅️ 메인으로 돌아가기"):
+            st.query_params.clear()
+            st.rerun()
+        st.stop()
+
+# 웹 애플리케이션 테스트 페이지 라우팅
+if selected_page == "web_app_test":
+    try:
+        import web_app_test
+        web_app_test.main()
+        st.stop()
+    except ImportError:
+        st.error("❌ web_app_test.py 모듈을 찾을 수 없습니다.")
+        if st.button("⬅️ 메인으로 돌아가기"):
+            st.query_params.clear()
+            st.rerun()
+        st.stop()
 
 if selected_report:
     # 분석 리포트 페이지 표시
     show_analysis_report(selected_report)
     st.stop()  # 메인 페이지 렌더링 중단
-
+    
 # 메인 타이틀
 st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
 
