@@ -654,7 +654,7 @@ if active_servers and vulnerability_categories:
                 
             # 최종 실행 결과 요약
             st.subheader("📊 실행 결과 요약")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("✅ 성공", f"{result_summary['성공한 태스크']}개")
             with col2:
@@ -662,6 +662,8 @@ if active_servers and vulnerability_categories:
             with col3:
                 st.metric("❌ 실패", f"{result_summary['실패한 태스크']}개")
             with col4:
+                st.metric("⚠️ 무시됨", f"{result_summary['무시된 태스크']}개")
+            with col5:
                 st.metric("🚫 접근불가", f"{result_summary['접근 불가 서버']}개")
                 
             # 서버별 상세 결과 표시 (추가 기능)

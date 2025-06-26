@@ -1,5 +1,8 @@
 - name: MySQL 불필요한 계정 진단 및 조치
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: no
 

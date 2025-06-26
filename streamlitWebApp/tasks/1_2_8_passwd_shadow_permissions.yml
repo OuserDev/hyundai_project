@@ -1,6 +1,9 @@
 ---
 - name: 진단 및 조치 - 계정 및 패스워드 파일 소유자/권한 설정
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: yes
 

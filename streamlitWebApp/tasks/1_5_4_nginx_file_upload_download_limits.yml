@@ -1,62 +1,57 @@
-- name: MySQL 로그 활성화 진단 및 조치
+- name: Nginx client_max_body_size 설정 진단 및 조치
   hosts: target_servers
   ignore_errors: true
   ignore_unreachable: true
   any_errors_fatal: false
   become: yes
-  gather_facts: yes # OS별 설정 파일 경로를 위해 fact 수집
+  gather_facts: no
 
   # 1. 변수 정의
   vars:
-    playbook_name: "mysql_logging_enabled.yml"
-    manual_remediation_guide: "MySQL 설정 파일([mysqld] 섹션)에 'slow_query_log=1'과 'slow_query_log_file=[경로]' 설정을 추가하고 서비스를 재시작하십시오. 필요시 general_log도 활성화할 수 있습니다."
-    # OS 계열별 MySQL 설정 파일 경로 정의
-    mysql_config_path: "{{ '/etc/my.cnf' if ansible_facts['os_family'] == 'RedHat' else '/etc/mysql/mysql.conf.d/mysqld.cnf' }}"
+    playbook_name: "nginx_client_max_body_size.yml"
+    manual_remediation_guide: "Nginx 설정 파일(nginx.conf)의 http 블록에 'client_max_body_size 10m;'과 같이 업로드 크기 제한 설정을 추가하십시오. (10M은 예시이며, 서비스 환경에 맞게 조절)"
+    nginx_main_config: "/etc/nginx/nginx.conf"
+    remediation_value: "10m"
 
   tasks:
     # ----------------------------------------------------------------
-    # 0. 사전 확인 (MySQL 설치 여부)
+    # 0. 사전 확인 (Nginx 설치 여부)
     # ----------------------------------------------------------------
-    - name: MySQL 설치 여부 확인 (사전 확인)
-      ansible.builtin.command: which mysqld
-      register: mysql_installed
+    - name: Nginx 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which nginx
+      register: nginx_installed
       changed_when: false
       failed_when: false
 
-    - name: MySQL 미설치 시 작업 종료
-      when: mysql_installed.rc != 0
+    - name: Nginx 미설치 시 작업 종료
+      when: nginx_installed.rc != 0
       block:
-        - name: MySQL 미설치 메시지 출력
+        - name: Nginx 미설치 메시지 출력
           ansible.builtin.debug:
-            msg: "MySQL이 설치되어 있지 않아 진단을 건너뜁니다."
+            msg: "Nginx가 설치되어 있지 않아 진단을 건너뜁니다."
         - name: 플레이북 실행 종료
           ansible.builtin.meta: end_play
 
     # ----------------------------------------------------------------
     # 2. 진단
     # ----------------------------------------------------------------
-    - name: 로그(general_log 또는 slow_query_log) 활성화 여부 진단
-      ansible.builtin.shell: "mysql -NBe \"SHOW VARIABLES\" | grep -E '^(general_log|slow_query_log)[[:space:]]' | grep -q 'ON'"
-      register: log_status_check
+    - name: nginx.conf 파일에 client_max_body_size 설정 여부 진단
+      ansible.builtin.shell: "grep -q -E '^\\s*client_max_body_size\\s+' {{ nginx_main_config }}"
+      register: size_limit_check
       changed_when: false
-      failed_when: false # grep이 ON을 못찾아도(rc=1) 오류가 아님
+      failed_when: false # grep이 못찾아도(rc=1) 오류가 아님
 
     - name: 취약 여부 종합 판단
       ansible.builtin.set_fact:
-        is_vulnerable: "{{ log_status_check.rc != 0 }}" # grep이 ON을 하나도 못 찾으면(rc=1) 취약
+        is_vulnerable: "{{ size_limit_check.rc != 0 }}" # 설정이 없으면(rc=1) 취약
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
-
-    - name: 현재 로그 설정값 확인 (보고서용)
-      ansible.builtin.shell: "mysql -NBe \"SHOW VARIABLES WHERE Variable_name IN ('general_log', 'slow_query_log')\""
-      register: current_log_status
-      changed_when: false
 
     # ----------------------------------------------------------------
     # 3. 진단 결과 보고
     # ----------------------------------------------------------------
     - name: 진단 결과 콘솔 출력
       ansible.builtin.debug:
-        msg: "진단 결과: {% if is_vulnerable %}취약 (general_log와 slow_query_log가 모두 비활성화 상태입니다){% else %}양호{% endif %}"
+        msg: "진단 결과: {% if is_vulnerable %}취약 (nginx.conf에 client_max_body_size 설정이 없습니다){% else %}양호{% endif %}"
 
     - name: 초기 JSON 보고서 생성 및 저장
       ansible.builtin.copy:
@@ -64,14 +59,14 @@
           {{
             {
               "playbook_name": playbook_name,
-              "task_description": "MySQL 로그 활성화 점검",
+              "task_description": "Nginx 파일 업로드 크기 제한(client_max_body_size) 점검",
               "diagnosis_result": "취약" if is_vulnerable else "양호",
               "is_vulnerable": is_vulnerable,
               "timestamp": report_timestamp,
               "hostname": inventory_hostname,
               "vulnerability_details": {
-                "reason": "분석에 필요한 로그(general/slow)가 모두 비활성화되어 있습니다." if is_vulnerable else "필수 로그 중 하나 이상이 활성화되어 있습니다.",
-                "current_status": current_log_status.stdout_lines | default([])
+                "reason": "DoS 공격 방지를 위한 client_max_body_size 설정이 nginx.conf에 없습니다." if is_vulnerable else "nginx.conf에 client_max_body_size 설정이 존재합니다.",
+                "checked_file": nginx_main_config
               },
               "remediation_tasks_performed": []
             } | to_nice_json
@@ -87,25 +82,15 @@
     - name: 조치 블록 (취약한 경우에만 실행)
       when: is_vulnerable
       block:
-        - name: slow_query_log 활성화 설정
+        - name: nginx.conf 파일에 'client_max_body_size' 설정 추가
           ansible.builtin.lineinfile:
-            path: "{{ mysql_config_path }}"
-            regexp: '^#?\s*slow_query_log\s*='
-            line: 'slow_query_log = 1'
-            insertafter: '^\\[mysqld\\]'
+            path: "{{ nginx_main_config }}"
+            regexp: '^(\s*#\s*)?client_max_body_size\s+.*'
+            line: '    client_max_body_size {{ remediation_value }};'
+            insertafter: '^\s*http\s*{'
             backup: yes
-          register: r_slow_log_set
-          notify: Restart mysql service
-
-        - name: slow_query_log 파일 경로 설정
-          ansible.builtin.lineinfile:
-            path: "{{ mysql_config_path }}"
-            regexp: '^#?\s*slow_query_log_file\s*='
-            line: 'slow_query_log_file = /var/log/mysql/mysql-slow.log'
-            insertafter: '^\\[mysqld\\]'
-            backup: yes
-          register: r_slow_log_file_set
-          notify: Restart mysql service
+          register: r_config_change
+          notify: Reload nginx service
 
         - name: 핸들러 즉시 실행
           ansible.builtin.meta: flush_handlers
@@ -115,14 +100,14 @@
     # ----------------------------------------------------------------
     - name: 수행된 조치 작업 기록
       ansible.builtin.set_fact:
-        remediation_done: "{{ (r_slow_log_set is defined and r_slow_log_set.changed) or (r_slow_log_file_set is defined and r_slow_log_file_set.changed) }}"
-        remediation_tasks_performed: "{{ (['slow_query_log 활성화'] if r_slow_log_set.changed else []) + (['slow_query_log 파일 경로 설정'] if r_slow_log_file_set.changed else []) }}"
+        remediation_done: "{{ r_config_change.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['nginx.conf에 `client_max_body_size` 추가 및 서비스 재시작'] if r_config_change.changed | default(false) else [] }}"
       when: is_vulnerable
 
     - name: 조치 결과 콘솔 출력
       ansible.builtin.debug:
         msg: |
-          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료 (slow_query_log 활성화)
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
           {% elif not is_vulnerable %}조치 불필요 (양호)
           {% else %}조치 실패 (수동 조치 필요)
           --------------------------------------------------
@@ -149,10 +134,16 @@
       become: yes
 
   # ----------------------------------------------------------------
-  # 핸들러: 조치 시 서비스 재시작
+  # 핸들러: 조치 시 문법 검사 및 서비스 재시작
   # ----------------------------------------------------------------
   handlers:
-    - name: Restart mysql service
-      ansible.builtin.systemd:
-        name: "{{ 'mysqld' if ansible_facts['os_family'] == 'RedHat' else 'mysql' }}"
-        state: restarted
+    - name: Reload nginx service
+      block:
+        - name: Nginx 설정 파일 문법 검사
+          ansible.builtin.command: nginx -t
+          changed_when: false
+
+        - name: Nginx 서비스 재시작
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded

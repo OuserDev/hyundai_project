@@ -1,5 +1,8 @@
 - name: MySQL 환경설정 파일 접근 권한 진단 및 조치
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: no
 

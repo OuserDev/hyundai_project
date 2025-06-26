@@ -34,6 +34,7 @@ def parse_play_recap(log_lines):
         "성공한 태스크": 0,
         "변경된 설정": 0,
         "실패한 태스크": 0,
+        "무시된 태스크": 0,    # 🆕 추가
         "접근 불가 서버": 0,
         "건너뛴 태스크": 0,
         "서버 상세": {}
@@ -86,6 +87,7 @@ def parse_play_recap(log_lines):
                     result_summary["성공한 태스크"] += stats.get('ok', 0)
                     result_summary["변경된 설정"] += stats.get('changed', 0)
                     result_summary["실패한 태스크"] += stats.get('failed', 0)
+                    result_summary["무시된 태스크"] += stats.get('ignored', 0)    # 🆕 추가
                     result_summary["접근 불가 서버"] += stats.get('unreachable', 0)
                     result_summary["건너뛴 태스크"] += stats.get('skipped', 0)
     

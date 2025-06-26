@@ -1,5 +1,8 @@
 - name: MySQL 패스워드 암호화 알고리즘 진단
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: no
 

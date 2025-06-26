@@ -1,6 +1,9 @@
 ---
 - name: 진단 및 조치 - root 계정 PATH 환경변수 보안 설정
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: yes
 
