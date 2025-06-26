@@ -1,0 +1,125 @@
+- name: MySQL 불필요한 계정 진단 및 조치
+  hosts: target_servers
+  become: yes
+  gather_facts: no
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "mysql_unnecessary_accounts.yml"
+    manual_remediation_guide: "불필요한 MySQL 계정을 직접 확인하고 삭제하십시오. (예: DROP USER 'user'@'%'; FLUSH PRIVILEGES;)"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (MySQL 설치 및 실행 여부)
+    # ----------------------------------------------------------------
+    - name: MySQL 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which mysql
+      register: mysql_installed
+      changed_when: false
+      failed_when: false
+
+    - name: MySQL 미설치 시 작업 건너뛰기
+      when: mysql_installed.rc != 0
+      block:
+        - name: MySQL 미설치 메시지 출력 및 종료
+          ansible.builtin.debug:
+            msg: "MySQL이 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: 불필요한 계정 존재 여부 진단
+      ansible.builtin.shell: |
+        # 'test' 데이터베이스가 있거나, '%' 호스트를 사용하는 계정이 있으면 취약
+        mysql -NBe "SHOW DATABASES LIKE 'test';" | grep -q 'test' || \
+        mysql -NBe "SELECT User, Host FROM mysql.user WHERE Host = '%';" | grep -q '.'
+      register: unnecessary_account_check
+      changed_when: false
+      failed_when: false # grep이 아무것도 찾지 못해 rc=1이 되어도 오류가 아님
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ unnecessary_account_check.rc == 0 }}" # grep의 리턴 코드가 0이면(찾으면) 취약
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (불필요한 계정이 존재합니다){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 데이터 생성
+      ansible.builtin.set_fact:
+        current_report_data:
+          playbook_name: "{{ playbook_name }}"
+          task_description: "MySQL 불필요한 계정 제거"
+          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
+          is_vulnerable: "{{ is_vulnerable }}"
+          timestamp: "{{ report_timestamp }}"
+          hostname: "{{ inventory_hostname }}"
+          vulnerability_details:
+            reason: "{{ '불필요한 `test` 데이터베이스 또는 ANYHOST(%) 계정이 존재합니다.' if is_vulnerable else '불필요한 계정이 존재하지 않습니다.' }}"
+          remediation_tasks_performed: []
+
+    - name: 초기 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 조치 블록 (취약한 경우에만 실행)
+      when: is_vulnerable
+      block:
+        - name: "'test' 데이터베이스 삭제 조치"
+          community.mysql.mysql_db:
+            name: test
+            state: absent
+          register: r_test_db
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ r_test_db.changed | default(false) }}"
+        remediation_tasks_performed: "{{ (['`test` 데이터베이스 삭제'] if r_test_db.changed | default(false) else []) }}"
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서에 조치 결과 추가
+      ansible.builtin.set_fact:
+        current_report_data: "{{ (lookup('file', result_json_path) | from_json) | combine({
+            'remediation_applied': remediation_done | default(false),
+            'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
+            'remediation_timestamp': report_timestamp,
+            'remediation_tasks_performed': remediation_tasks_performed | default([]),
+            'remediation_guide': manual_remediation_guide if (is_vulnerable and not (remediation_done | default(false))) else ''
+          }, recursive=True) }}"
+      when: is_vulnerable or not is_vulnerable # 보고서는 항상 업데이트
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: no

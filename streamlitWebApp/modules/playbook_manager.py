@@ -8,22 +8,24 @@ import threading
 import queue
 from datetime import datetime
 
-"""생성된 플레이북을 파일로 저장 (타임스탬프 반환 추가)"""
+"""생성된 플레이북을 파일로 저장 (기존 방식 + 오류 처리)"""
 def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     # 결과 디렉토리를 미리 생성 (Streamlit에서)
     results_dir = os.path.join(result_folder_path, "results")
     os.makedirs(results_dir, exist_ok=True)
     print(f"📁 결과 디렉토리 미리 생성: {results_dir}")
     
-    # 메인 플레이북 구조 생성 (디렉토리 생성 태스크 제거)
+    # 메인 플레이북 구조 생성 (오류 처리 추가)
     playbook_content = []
     
-    # 첫 번째 플레이: 초기 설정 (디렉토리 생성 없이)
+    # 첫 번째 플레이: 초기 설정 (오류 처리 설정 추가)
     main_play = {
-        'name': 'KISA Security Vulnerability Check',
+        'name': 'KISA Security Vulnerability Check with Error Handling',
         'hosts': 'target_servers',
         'become': True,
         'gather_facts': True,
+        'ignore_errors': True,  # 전체 플레이에서 오류 무시
+        'any_errors_fatal': False,  # 개별 호스트 오류로 전체 중단 방지
         'vars': {
             'result_directory': f"{result_folder_path}/results",
             'execution_timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -31,13 +33,14 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     }
     playbook_content.append(main_play)
     
-    # import_playbook들 추가 (변수 전달)
+    # import_playbook들 추가 (변수 전달 + 오류 처리)
     for task_file in playbook_tasks:
         # 태스크 코드 추출 (파일명에서)
         task_code = task_file.replace('.yml', '')
         
         import_entry = {
             'import_playbook': f"../../tasks/{task_file}",
+            'ignore_errors': True,  # 각 import_playbook에서 오류 무시
             'vars': {
                 'result_json_path': f"{os.path.abspath(result_folder_path)}/results/{task_code}_{{{{ inventory_hostname }}}}.json"
             }
@@ -45,7 +48,6 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
         playbook_content.append(import_entry)
     
     # 파일명 생성 (result_folder_path에서 타임스탬프 추출)
-    # result_folder_path 예: "playbooks/playbook_result_20250619_164159"
     folder_name = os.path.basename(result_folder_path)
     timestamp = folder_name.replace("playbook_result_", "")
     
@@ -58,7 +60,7 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     
     # 백엔드 콘솔에 생성된 플레이북 내용 출력
     print(f"\n{'='*80}")
-    print(f"📝 생성된 메인 플레이북 내용:")
+    print(f"📝 생성된 오류 처리 플레이북 내용:")
     print(f"{'='*80}")
     with open(filepath, 'r', encoding='utf-8') as f:
         print(f.read())
@@ -67,7 +69,7 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     # 타임스탬프도 함께 반환
     return filepath, filename, timestamp
 
-"""백엔드에서 Ansible 플레이북 실행 (타임스탬프 받아서 로그명 통일)"""
+"""백엔드에서 Ansible 플레이북 실행 (오류 무시 옵션 포함)"""
 def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_folder_path, timestamp):
     # 로그 파일 경로 생성 (플레이북과 동일한 타임스탬프 사용)
     log_filename = f"ansible_execute_log_{timestamp}.log"
@@ -76,23 +78,25 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
     # logs 디렉터리 생성
     os.makedirs("logs", exist_ok=True)
     
-    # 실행 명령어 구성
+    # 실행 명령어 구성 (오류 무시 옵션 추가)
     cmd = [
         'ansible-playbook',
         '-i', inventory_path,
         playbook_path,
-        '--limit', 'target_servers',  # 메인 플레이북에서 target_servers 그룹 사용
+        '--limit', 'target_servers',
+        '--ignore-errors',  # ← 핵심 추가! 개별 플레이북 실패해도 다음 계속 실행
         '-v'
     ]
     
     # 백엔드 콘솔에 명령어 출력
     print(f"\n{'='*80}")
-    print(f"🚀 ANSIBLE PLAYBOOK 실행 시작")
+    print(f"🚀 ANSIBLE PLAYBOOK 실행 시작 (오류 무시 모드)")
     print(f"{'='*80}")
     print(f"📝 명령어: {' '.join(cmd)}")
     print(f"📂 플레이북: {playbook_path}")
     print(f"📋 인벤토리: {inventory_path}")
     print(f"🎯 대상 그룹: target_servers")
+    print(f"⚠️ 오류 처리: 개별 태스크 실패해도 다음 태스크 계속 진행")
     print(f"📄 로그 파일: {log_path} (타임스탬프: {timestamp})")
     print(f"📁 결과 저장 폴더: {result_folder_path}/results")
     print(f"{'='*80}\n")
@@ -106,12 +110,13 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
         try:
             # 로그 파일 헤더 작성
             log_header = [
-                f"=== Ansible Playbook 실행 로그 (타임스탬프 동기화: {timestamp}) ===",
+                f"=== Ansible Playbook 실행 로그 (오류 무시 모드, 타임스탬프: {timestamp}) ===",
                 f"실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 f"명령어: {' '.join(cmd)}",
                 f"플레이북: {playbook_path}",
                 f"인벤토리: {inventory_path}",
                 f"대상 그룹: target_servers",
+                f"오류 처리: --ignore-errors 옵션 사용 (개별 실패해도 계속 진행)",
                 f"결과 저장: {result_folder_path}/results",
                 f"{'='*50}",
                 ""
@@ -144,10 +149,19 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
             return_code = process.wait()
             
             # 완료 메시지를 로그에 추가
-            completion_msg = f"실행 완료 - 종료 코드: {return_code} (타임스탬프: {timestamp})"
+            completion_msg = f"실행 완료 - 종료 코드: {return_code} (오류 무시 모드, 타임스탬프: {timestamp})"
             log_lines.append(f"\n{'='*50}")
             log_lines.append(f"[{datetime.now().strftime('%H:%M:%S')}] {completion_msg}")
             log_lines.append(f"실행 종료 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # --ignore-errors 모드에서는 개별 실패가 있어도 성공으로 간주
+            if return_code == 0:
+                log_lines.append(f"✅ 모든 태스크가 성공적으로 완료되었습니다.")
+            elif return_code == 2:
+                log_lines.append(f"⚠️ 일부 태스크가 실패했지만 --ignore-errors 옵션으로 계속 진행되었습니다.")
+                log_lines.append(f"📊 PLAY RECAP에서 개별 실패 내역을 확인하세요.")
+            else:
+                log_lines.append(f"❌ 예상치 못한 오류가 발생했습니다.")
             
             # 로그 파일에 저장
             try:
@@ -162,9 +176,13 @@ def execute_ansible_playbook(playbook_path, inventory_path, limit_hosts, result_
             if return_code == 0:
                 print(f"✅ ANSIBLE PLAYBOOK 실행 완료 (종료 코드: {return_code}, 타임스탬프: {timestamp})")
                 print(f"📁 결과 파일들이 다음 위치에 저장되었습니다: {result_folder_path}/results/")
-                print(f"📄 로그: {log_path}")
+            elif return_code == 2:
+                print(f"⚠️ ANSIBLE PLAYBOOK 일부 실패 (종료 코드: {return_code}, 타임스탬프: {timestamp})")
+                print(f"📊 --ignore-errors 옵션으로 모든 태스크가 실행되었습니다.")
+                print(f"📁 결과 파일들: {result_folder_path}/results/")
             else:
-                print(f"❌ ANSIBLE PLAYBOOK 실행 실패 (종료 코드: {return_code}, 타임스탬프: {timestamp})")
+                print(f"❌ ANSIBLE PLAYBOOK 실행 오류 (종료 코드: {return_code}, 타임스탬프: {timestamp})")
+            print(f"📄 로그: {log_path}")
             print(f"{'='*80}\n")
             
             output_queue.put(('finished', return_code))

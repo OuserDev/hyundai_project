@@ -1,0 +1,129 @@
+---
+- name: 진단 및 조치 - 자동 로그인 비활성화
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 파일 ---
+    gdm_config_file: "/etc/gdm3/custom.conf"
+
+    # --- 설정 목표 ---
+    # 주석처리 되거나 false로 설정되어야 함
+    vulnerable_setting_regexp: '^\s*AutomaticLoginEnable\s*=\s*true'
+    secure_setting_line: "AutomaticLoginEnable=false"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_2_4_disable_autologin.yml"
+    remediation_tasks_performed: []
+    manual_remediation_guide: "수동으로 /etc/gdm3/custom.conf 파일을 열어 [daemon] 섹션의 AutomaticLoginEnable 값을 false로 변경하거나 해당 라인을 주석 처리하십시오."
+
+  tasks:
+    # 2. 진단
+    # GDM3 설정 파일 존재 여부 확인
+    - name: GDM3 설정 파일 확인
+      ansible.builtin.stat:
+        path: "{{ gdm_config_file }}"
+      register: gdm_config_stat
+
+    # 자동 로그인 설정 여부 진단
+    - name: 자동 로그인 활성화 여부 진단
+      ansible.builtin.shell: "grep -qE '{{ vulnerable_setting_regexp }}' {{ gdm_config_file }}"
+      register: autologin_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true # 파일이 없거나 패턴이 없으면 정상
+      when: gdm_config_stat.stat.exists
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ autologin_check.rc == 0 if 'rc' in autologin_check else false }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고 (초기)
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (자동 로그인이 활성화되어 있습니다){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성
+    - name: 초기 JSON 보고서 생성
+      ansible.builtin.set_fact:
+        current_report_data:
+          playbook_name: "{{ playbook_name }}"
+          task_description: "자동 로그인 비활성화"
+          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
+          is_vulnerable: "{{ is_vulnerable }}"
+          timestamp: "{{ report_timestamp }}"
+          hostname: "{{ inventory_hostname }}"
+          vulnerability_details:
+            reason: "{{ 'GDM3 설정 파일에 자동 로그인이 활성화되어 있습니다.' if is_vulnerable else '자동 로그인이 비활성화되어 있습니다.' }}"
+          remediation_tasks_performed: []
+
+    # 초기 JSON 보고서 파일 저장
+    - name: 초기 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치
+    # 자동 로그인 설정을 false로 변경
+    - name: 자동 로그인 비활성화 조치
+      ansible.builtin.lineinfile:
+        path: "{{ gdm_config_file }}"
+        regexp: '^\s*#?\s*AutomaticLoginEnable\s*='
+        line: "{{ secure_setting_line }}"
+        state: present
+        insertafter: '\[daemon\]'
+        backup: yes
+      register: autologin_remediation
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ autologin_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['GDM3 자동 로그인 설정 비활성화'] if autologin_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+
+    # 조치 결과를 콘솔에 출력
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+      when: not ansible_check_mode
+
+    # 최종 JSON 보고서에 조치 결과 추가
+    - name: 최종 JSON 보고서에 조치 결과 추가
+      ansible.builtin.set_fact:
+        current_report_data: "{{ (lookup('file', result_json_path) | from_json) | combine({
+            'remediation_applied': remediation_done | default(false),
+            'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패 (수동 조치 필요)'),
+            'remediation_timestamp': report_timestamp,
+            'remediation_tasks_performed': remediation_tasks_performed | default([]),
+            'remediation_guide': manual_remediation_guide if (is_vulnerable and not (remediation_done | default(false))) else ''
+          }, recursive=True) }}"
+      when: not ansible_check_mode
+
+    # 최종 JSON 보고서 파일 덮어쓰기
+    - name: 최종 JSON 보고서 파일 저장
+      ansible.builtin.copy:
+        content: "{{ current_report_data | to_nice_json }}"
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode

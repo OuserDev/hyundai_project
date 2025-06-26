@@ -392,7 +392,6 @@ if active_servers and vulnerability_categories:
                     
 # 정적 분석은 활성화되었지만 서버가 선택되지 않은 경우
 elif not active_servers:
-    st.markdown("---")
     st.info("📋 대상 서버를 선택하면 해당 서버의 취약점 점검 항목을 설정할 수 있습니다.")
 
 st.markdown("---")
@@ -473,13 +472,45 @@ if active_servers and vulnerability_categories:
         # 생성된 플레이북 정보 표시
         st.success("✅ 플레이북 생성 및 저장 완료!")
         
-        # 선택된 점검 항목 카운트
+        # 선택된 점검 항목 카운트 및 서비스별 상세 목록 생성
         total_checks = count_selected_checks(st.session_state.selected_checks, vulnerability_categories)
         
+        # 서비스별로 선택된 항목들 정리
+        selected_by_service = {}
+        
+        for service, selected in st.session_state.selected_checks.items():
+            if service in ["Server-Linux", "PC-Linux", "MySQL", "Apache", "Nginx", "PHP"] and isinstance(selected, dict):
+                service_tasks = []
+                
+                if selected.get("all", False):
+                    # 전체 선택 시 모든 항목 추가
+                    for category, items in vulnerability_categories[service]["subcategories"].items():
+                        service_tasks.extend(items)
+                else:
+                    # 개별 선택된 항목만 추가
+                    categories = selected.get("categories", {})
+                    for category, items in categories.items():
+                        if isinstance(items, dict):
+                            for item, item_selected in items.items():
+                                if item_selected:
+                                    service_tasks.append(item)
+                
+                if service_tasks:
+                    selected_by_service[service] = service_tasks
+            
+            elif selected and service in vulnerability_categories:
+                # 단순 boolean 선택 방식
+                service_tasks = []
+                for category, items in vulnerability_categories[service]["subcategories"].items():
+                    service_tasks.extend(items)
+                if service_tasks:
+                    selected_by_service[service] = service_tasks
+        
+        # 기본 정보
         playbook_info = {
             "대상 서버": active_servers,
             "총 점검 항목": f"{total_checks}개",
-            "점검 서비스": list(st.session_state.selected_checks.keys()),
+            "점검 서비스": list(selected_by_service.keys()),
             "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
             "저장 경로": st.session_state.playbook_path,
             "inventory 파일": st.session_state.inventory_path,
@@ -488,8 +519,36 @@ if active_servers and vulnerability_categories:
             "예상 소요 시간": f"{len(active_servers) * 3}분"
         }
         
+        # 기본 정보 표시
         st.json(playbook_info)
         
+        # 선택된 점검 항목을 서비스별로 상세 표시
+        if selected_by_service:
+            st.subheader("📋 선택된 점검 항목 상세 목록")
+            
+            # 서비스별 탭 또는 expander로 표시
+            for service, tasks in selected_by_service.items():
+                service_icons = {
+                    "Server-Linux": "🐧",
+                    "PC-Linux": "🖥️", 
+                    "MySQL": "🐬",
+                    "Apache": "🪶",
+                    "Nginx": "⚡",
+                    "PHP": "🐘"
+                }
+                
+                icon = service_icons.get(service, "📦")
+                
+                with st.expander(f"{icon} {service} ({len(tasks)}개 점검 항목)", expanded=True):
+                    for i, task in enumerate(tasks, 1):
+                        st.markdown(f"{i}. {task}")
+            
+            # 요약 정보
+            st.info(f"💡 총 {len(selected_by_service)}개 서비스에서 {total_checks}개 점검 항목이 선택되었습니다.")
+        
+        else:
+            st.warning("⚠️ 선택된 점검 항목이 없습니다.")
+                    
         # 실행 경고 메시지
         st.warning("⚠️ 실제 서버에 변경 사항이 적용됩니다!")
         if st.button("▶️ 실행 시작 (생성된 Ansible 플레이북을 실제로 실행)", type="secondary", use_container_width=True):
