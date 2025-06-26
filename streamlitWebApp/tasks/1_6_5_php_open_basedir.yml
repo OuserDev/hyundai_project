@@ -1,0 +1,154 @@
+- name: PHP 파일 접근 경로 제한(open_basedir) 진단 및 조치
+  hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "php_open_basedir_option.yml"
+    manual_remediation_guide: "php.ini 설정 파일에서 'open_basedir' 값을 웹 서비스 디렉터리 경로로 설정하여 파일 접근을 제한하십시오. (예: open_basedir = /var/www/html/:/tmp/)"
+    remediation_value: "/var/www/:/tmp/"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (PHP 설치 여부)
+    # ----------------------------------------------------------------
+    - name: PHP 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which php
+      register: php_installed
+      changed_when: false
+      failed_when: false
+
+    - name: PHP 미설치 시 작업 종료
+      when: php_installed.rc != 0
+      block:
+        - name: PHP 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "PHP가 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: open_basedir 미설정 또는 빈 값 설정 파일 진단
+      ansible.builtin.shell: |
+        # open_basedir 지시어가 없거나, 있더라도 값이 비어있는 php.ini 파일을 찾음
+        (grep -L -r 'open_basedir' /etc/php* | grep 'php.ini') || \
+        (grep -r -l -E '^\s*open_basedir\s*=\s*$' /etc/php* | grep 'php.ini') || true
+      register: open_basedir_check
+      changed_when: false
+      failed_when: false
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        vulnerable_files: "{{ open_basedir_check.stdout_lines | default([]) | unique }}"
+        is_vulnerable: "{{ (open_basedir_check.stdout_lines | default([]) | length) > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (open_basedir 미설정 파일 발견){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "PHP 파일 접근 경로 제한(open_basedir) 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "PHP의 open_basedir 설정이 없어, PHP 스크립트가 서버의 모든 파일에 접근할 수 있는 심각한 보안 문제가 있습니다." if is_vulnerable else "PHP의 파일 접근 경로가 open_basedir을 통해 안전하게 제한되어 있습니다.",
+                "vulnerable_files_found": vulnerable_files
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: open_basedir에 기본 경로 설정
+      ansible.builtin.lineinfile:
+        path: "{{ item }}"
+        regexp: '^\s*;?\s*open_basedir\s*='
+        line: "open_basedir = {{ remediation_value }}"
+        backup: yes
+      loop: "{{ vulnerable_files }}"
+      register: r_config_change
+      when: is_vulnerable
+      notify: Reload PHP-FPM service
+
+    - name: 핸들러 즉시 실행 (조치가 수행된 경우)
+      ansible.builtin.meta: flush_handlers
+      when: r_config_change.changed | default(false)
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ r_config_change.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['PHP 설정 파일 수정 및 서비스 재시작'] if (r_config_change is defined and r_config_change.changed) else [] }}"
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          (참고: 자동 조치로 '{{ remediation_value }}' 값이 설정되었습니다. 애플리케이션 경로에 맞게 수정이 필요할 수 있습니다.)
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if (is_vulnerable and not (remediation_done | default(false))) else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+  # ----------------------------------------------------------------
+  # 핸들러: 조치 시 서비스 재시작
+  # ----------------------------------------------------------------
+  handlers:
+    - name: Reload PHP-FPM service
+      block:
+        - name: 실행 중인 PHP-FPM 서비스 이름 찾기
+          ansible.builtin.shell: "systemctl list-units --type=service | grep 'php.*-fpm' | awk '{print $1}'"
+          register: php_fpm_services
+          changed_when: false
+
+        - name: 발견된 모든 PHP-FPM 서비스 재시작
+          ansible.builtin.systemd:
+            name: "{{ item }}"
+            state: reloaded
+          loop: "{{ php_fpm_services.stdout_lines }}"

@@ -1,6 +1,9 @@
 ---
 - name: /etc/(x)inetd.conf 파일 소유자 및 권한 설정
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: yes
 

@@ -32,7 +32,7 @@
     - name: 취약 여부 종합 판단
       ansible.builtin.set_fact:
         # grep 명령어가 실패하면(rc!=0) 'ALL: ALL' 규칙이 없는 것이므로 '취약'
-        is_vulnerable: "{{ deny_rule_check.rc != 0 }}"
+        is_vulnerable: "{{ hosts_deny_check.rc | default(1) != 0 }}"
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
 
     # 3. 진단 결과 보고

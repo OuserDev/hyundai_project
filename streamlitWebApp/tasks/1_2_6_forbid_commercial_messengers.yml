@@ -1,0 +1,101 @@
+---
+- name: 진단 및 조치 - 상용 메신저 사용 금지
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 점검 대상 메신저 프로세스 이름 패턴 (egrep용 정규식) ---
+    messenger_process_pattern: "kakao|nateon|telegram|line|wickr"
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_2_6_forbid_commercial_messengers.yml"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 2. 진단
+    # 실행 중인 상용 메신저 프로세스가 있는지 확인
+    - name: 상용 메신저 프로세스 실행 여부 확인
+      ansible.builtin.shell: "ps -ef | grep -iE '{{ messenger_process_pattern }}' | grep -v 'grep'"
+      register: messenger_process_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true # 프로세스가 없으면 rc=1이 되므로 오류 무시
+
+    # 진단 결과에 따라 취약 여부 변수 설정
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        # grep 명령어의 리턴 코드가 0이면(프로세스를 찾으면) '취약'
+        is_vulnerable: "{{ messenger_process_check.rc == 0 }}"
+        vulnerable_processes: "{{ messenger_process_check.stdout_lines | default([]) }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (상용 메신저 프로세스 발견){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "상용 메신저 사용 금지",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "정책에 의해 사용이 금지된 상용 메신저 프로세스가 실행 중입니다." if is_vulnerable else "금지된 상용 메신저 프로세스가 발견되지 않았습니다.",
+                "running_processes": vulnerable_processes
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 4. 조치 (수동 조치 안내)
+    # 자동으로 애플리케이션을 삭제하지 않고, 사용자에게 필요한 조치를 안내
+    - name: 필요한 수동 조치 안내
+      ansible.builtin.debug:
+        msg:
+          - "보안 취약점이 발견되었습니다. 아래의 상용 메신저 프로세스를 확인하고 관련 애플리케이션을 삭제해야 합니다."
+          - "실행 중인 프로세스 목록:"
+          - "{{ vulnerable_processes }}"
+          - "조치 권고:"
+          - "  - 이 애플리케이션들이 조직의 정책에 의해 허용된 것인지 확인하십시오."
+          - "  - 불필요한 애플리케이션이라면, 'apt', 'snap', 'flatpak' 등 적절한 패키지 매니저를 사용하여 완전히 삭제하십시오."
+          - "    (예: sudo apt-get purge <패키지명> 또는 sudo snap remove <패키지명>)"
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    # 수행된 조치 작업 기록 (자동 조치가 없으므로 '수동 조치 필요'로 기록)
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode

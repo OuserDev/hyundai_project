@@ -5,18 +5,24 @@ from collections import defaultdict
 취약점 점검 관련 유틸리티 함수들
 """
 
-"""선택된 점검 항목 수 계산"""
-def count_selected_checks(selected_checks,vulnerability_categories):
+"""선택된 점검 항목 수 계산 (확장 버전)"""
+def count_selected_checks(selected_checks, vulnerability_categories):
     total_checks = 0
     
     for service, selected in selected_checks.items():
-        if service == "Server-Linux" and isinstance(selected, dict):
-            if selected["all"]:
-                total_checks += vulnerability_categories["Server-Linux"]["count"]
+        # 구조화된 선택 방식 (Server-Linux, PC-Linux, MySQL, Apache, Nginx, PHP)
+        if service in ["Server-Linux", "PC-Linux", "MySQL", "Apache", "Nginx", "PHP"] and isinstance(selected, dict):
+            if selected.get("all", False):
+                # 전체 선택 시 해당 서비스의 모든 항목 수 추가
+                total_checks += vulnerability_categories[service]["count"]
             else:
-                for category, items in selected["categories"].items():
+                # 개별 선택된 항목만 카운트
+                categories = selected.get("categories", {})
+                for category, items in categories.items():
                     if isinstance(items, dict):
                         total_checks += sum(1 for item_selected in items.values() if item_selected)
+        
+        # 단순 boolean 선택 방식 (SQLite, WebApp 등)
         elif selected and service in vulnerability_categories:
             total_checks += vulnerability_categories[service]["count"]
     
@@ -28,6 +34,7 @@ def parse_play_recap(log_lines):
         "성공한 태스크": 0,
         "변경된 설정": 0,
         "실패한 태스크": 0,
+        "무시된 태스크": 0,    # 🆕 추가
         "접근 불가 서버": 0,
         "건너뛴 태스크": 0,
         "서버 상세": {}
@@ -80,6 +87,7 @@ def parse_play_recap(log_lines):
                     result_summary["성공한 태스크"] += stats.get('ok', 0)
                     result_summary["변경된 설정"] += stats.get('changed', 0)
                     result_summary["실패한 태스크"] += stats.get('failed', 0)
+                    result_summary["무시된 태스크"] += stats.get('ignored', 0)    # 🆕 추가
                     result_summary["접근 불가 서버"] += stats.get('unreachable', 0)
                     result_summary["건너뛴 태스크"] += stats.get('skipped', 0)
     
