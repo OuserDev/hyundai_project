@@ -202,99 +202,32 @@ if static_enabled and active_servers and vulnerability_categories:
         with col1:
             st.markdown("**🖥️ 운영체제 관련**")
             
-    if "Server-Linux" in available_services:
-        # 상태 동기화
-        individual_states, category_states, all_items_checked = sync_checkbox_states()
-        
-        # 전체 선택 체크박스
-        server_linux_all_current = st.session_state.get("server_linux_all", False)
-        server_linux_all = st.checkbox(
-            "Server-Linux 전체 (36개)", 
-            key="server_linux_all",
-            value=server_linux_all_current
-        )
-        
-        # 전체 체크박스 변화 감지 및 처리
-        if server_linux_all != all_items_checked:
-            if server_linux_all:
-                # 전체 선택 → 모든 개별 항목 체크
-                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
-                    for item in items:
-                        st.session_state[f"item_{item}"] = True
-                    st.session_state[f"category_{category}"] = True
-            else:
-                # 전체 해제 → 모든 개별 항목 해제
-                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
-                    for item in items:
-                        st.session_state[f"item_{item}"] = False
-                    st.session_state[f"category_{category}"] = False
-            st.rerun()
-        
-        st.markdown("**세부 카테고리 선택:**")
-        selected_checks["Server-Linux"] = {"all": server_linux_all, "categories": {}}
-        
-        for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
-            category_key = f"category_{category}"
-            category_current = st.session_state.get(category_key, False)
-            
-            category_selected = st.checkbox(
-                f"{category} ({len(items)}개)", 
-                key=category_key,
-                value=category_current,
-                disabled=server_linux_all
-            )
-            
-            # 카테고리 상태 변화 감지
-            if category_selected != category_states[category]:
-                if category_selected:
-                    # 카테고리 선택 → 하위 모든 항목 체크
-                    for item in items:
-                        st.session_state[f"item_{item}"] = True
-                else:
-                    # 카테고리 해제 → 하위 모든 항목 해제
-                    for item in items:
-                        st.session_state[f"item_{item}"] = False
+            if "Server-Linux" in available_services:
+                server_linux_all = st.checkbox("Server-Linux 전체 (36개)", key="server_linux_all")
                 
-                # 전체 체크박스 상태도 업데이트
-                _, _, new_all_checked = sync_checkbox_states()
-                st.session_state["server_linux_all"] = new_all_checked
-                st.rerun()
-            
-            if category_selected or server_linux_all:
-                with st.expander(f"{category} 세부 항목", expanded=False):
-                    category_items = {}
+                st.markdown("**세부 카테고리 선택:**")
+                selected_checks["Server-Linux"] = {"all": server_linux_all, "categories": {}}
+                
+                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
+                    # 전체 선택 시 모든 카테고리 자동 선택
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_{category}",
+                        value=server_linux_all,
+                    )
                     
-                    for item in items:
-                        item_key = f"item_{item}"
-                        item_current = st.session_state.get(item_key, False)
-                        
-                        item_selected = st.checkbox(
-                            item, 
-                            key=item_key,
-                            value=item_current,
-                            disabled=server_linux_all or category_selected
-                        )
-                        
-                        # 개별 항목 상태 변화 감지 (disabled가 아닐 때만)
-                        if not (server_linux_all or category_selected):
-                            if item_selected != individual_states[category][item]:
-                                # 카테고리 상태 확인
-                                category_all_checked = all(
-                                    st.session_state.get(f"item_{it}", False) 
-                                    for it in items
+                    if category_selected or server_linux_all:
+                        with st.expander(f"{category} 세부 항목", expanded=server_linux_all):
+                            category_items = {}
+                            for item in items:
+                                # 전체 선택 시 모든 세부 항목도 자동 선택
+                                item_selected = st.checkbox(
+                                    item, 
+                                    key=f"item_{item}", 
+                                    value=True if (server_linux_all or category_selected) else False,
                                 )
-                                st.session_state[category_key] = category_all_checked
-                                
-                                # 전체 상태 확인
-                                _, _, new_all_checked = sync_checkbox_states()
-                                st.session_state["server_linux_all"] = new_all_checked
-                                st.rerun()
-                        
-                        category_items[item] = item_selected
-                    
-                    selected_checks["Server-Linux"]["categories"][category] = category_items
-            else:
-                selected_checks["Server-Linux"]["categories"][category] = {}
+                                category_items[item] = item_selected
+                            selected_checks["Server-Linux"]["categories"][category] = category_items
             
             if "PC-Linux" in available_services:
                 pc_linux_selected = st.checkbox("PC-Linux 전체 (12개)", key="pc_linux_all")
