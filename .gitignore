@@ -6,3 +6,5 @@ tasks/json/
 __pycache__/
 *.pyo
 *.pyc
+*.backup
+ansible-retry/

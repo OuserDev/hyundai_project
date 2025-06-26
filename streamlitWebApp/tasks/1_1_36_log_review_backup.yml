@@ -1,6 +1,9 @@
 ---
 - name: 진단 및 조치 - 로그의 정기적인 검토 및 백업
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: yes
 

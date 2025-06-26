@@ -70,14 +70,56 @@ render_sidebar_with_history(vulnerability_categories, filename_mapping)
 # 쿼리 파라미터 확인해서 분석 리포트 페이지 표시할지 결정
 query_params = st.query_params
 selected_report = query_params.get("report", None)
+selected_page = query_params.get("page", None)
+
+# 포트 스캐닝 페이지 라우팅
+if selected_page == "port_scanning":
+    try:
+        import dynamic_analysis
+        dynamic_analysis.main()
+        st.stop()
+    except ImportError:
+        st.error("❌ dynamic_analysis.py 모듈을 찾을 수 없습니다.")
+        if st.button("⬅️ 메인으로 돌아가기"):
+            st.query_params.clear()
+            st.rerun()
+        st.stop()
+
+# 웹 애플리케이션 테스트 페이지 라우팅
+if selected_page == "web_app_test":
+    try:
+        import web_app_test
+        web_app_test.main()
+        st.stop()
+    except ImportError:
+        st.error("❌ web_app_test.py 모듈을 찾을 수 없습니다.")
+        if st.button("⬅️ 메인으로 돌아가기"):
+            st.query_params.clear()
+            st.rerun()
+        st.stop()
 
 if selected_report:
     # 분석 리포트 페이지 표시
     show_analysis_report(selected_report)
     st.stop()  # 메인 페이지 렌더링 중단
-
+    
 # 메인 타이틀
 st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("🌐 포트 스캐닝 (Dynamic Analysis)", use_container_width=True, key="btn_back_from_dynamic"):
+        st.query_params.update({"page": "port_scanning"})
+        st.rerun()
+
+with col2:
+    if st.button("🕷️ 웹 애플리케이션 테스트", use_container_width=True, key="btn_back_from_webApp"):
+        st.query_params.update({"page": "web_app_test"})
+        st.rerun()
+        
+# 취약점 점검 체계 선택
+st.header("🔍 정적 분석 (Static Analysis)")
 
 # 시스템 구성 요소 표시
 col1, col2, col3 = st.columns(3)
@@ -96,11 +138,8 @@ with col3:
 
 st.markdown("---")
 
-# Managed Nodes 선택 섹션
-st.header("🖥️ Managed Nodes 구성")
-
 # inventory.ini 파일 업로드 섹션
-st.subheader("📂 Inventory 파일 업로드")
+st.subheader("🖥️ Managed Nodes 구성 (Inventory 파일 업로드)")
 
 # 파일 업로드 위젯
 uploaded_file = st.file_uploader(
@@ -165,171 +204,194 @@ else:
 
 st.markdown("---")
 
-# 취약점 점검 체계 선택
-st.header("🔍 취약점 점검 체계")
-
-# 분석 방법 선택 (정적 분석만 활성화)
-st.subheader("분석 종류 선택")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    static_enabled = st.checkbox("정적 분석 (Static Analysis)", help="**기준 가이드라인**: KISA 한국인터넷진흥원 2024.06 클라우드 취약점 점검 가이드")
-
-with col2:
-    st.checkbox("동적 분석 (Dynamic Analysis)", disabled=True, help="개발 중 - 추후 지원 예정")
-
-with col3:
-    st.checkbox("네트워크 분석 (Network Analysis)", disabled=True, help="개발 중 - 추후 지원 예정")
-
 # 정적 분석 세부 설정 - 서버 선택 시에만 표시
-if static_enabled and active_servers and vulnerability_categories:
+if active_servers and vulnerability_categories:
     st.subheader("📝 정적 분석 - 취약점 점검 항목 선택")
     
-    # 활성 서버에서 사용 가능한 서비스 추출
-    available_services = set()
-    for server_name in active_servers:
-        if server_name in servers_info:
-            available_services.update(servers_info[server_name]["services"])
+    # 서비스별 점검 항목 선택
+    selected_checks = {}
     
-    if not available_services:
-        st.warning("⚠️ 선택된 서버에 점검 가능한 서비스가 없습니다.")
-    else:
-        # 서비스별 점검 항목 선택
-        selected_checks = {}
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🖥️ 운영체제")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**🖥️ 운영체제 관련**")
-            
-    if "Server-Linux" in available_services:
-        # 상태 동기화
-        individual_states, category_states, all_items_checked = sync_checkbox_states()
-        
-        # 전체 선택 체크박스
-        server_linux_all_current = st.session_state.get("server_linux_all", False)
-        server_linux_all = st.checkbox(
-            "Server-Linux 전체 (36개)", 
-            key="server_linux_all",
-            value=server_linux_all_current
-        )
-        
-        # 전체 체크박스 변화 감지 및 처리
-        if server_linux_all != all_items_checked:
-            if server_linux_all:
-                # 전체 선택 → 모든 개별 항목 체크
-                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
-                    for item in items:
-                        st.session_state[f"item_{item}"] = True
-                    st.session_state[f"category_{category}"] = True
-            else:
-                # 전체 해제 → 모든 개별 항목 해제
-                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
-                    for item in items:
-                        st.session_state[f"item_{item}"] = False
-                    st.session_state[f"category_{category}"] = False
-            st.rerun()
-        
-        st.markdown("**세부 카테고리 선택:**")
+        # Server-Linux
+        server_linux_all = st.checkbox("🐧 Server-Linux 전체 (36개)", key="server_linux_all")
         selected_checks["Server-Linux"] = {"all": server_linux_all, "categories": {}}
         
-        for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
-            category_key = f"category_{category}"
-            category_current = st.session_state.get(category_key, False)
-            
-            category_selected = st.checkbox(
-                f"{category} ({len(items)}개)", 
-                key=category_key,
-                value=category_current,
-                disabled=server_linux_all
-            )
-            
-            # 카테고리 상태 변화 감지
-            if category_selected != category_states[category]:
-                if category_selected:
-                    # 카테고리 선택 → 하위 모든 항목 체크
-                    for item in items:
-                        st.session_state[f"item_{item}"] = True
-                else:
-                    # 카테고리 해제 → 하위 모든 항목 해제
-                    for item in items:
-                        st.session_state[f"item_{item}"] = False
-                
-                # 전체 체크박스 상태도 업데이트
-                _, _, new_all_checked = sync_checkbox_states()
-                st.session_state["server_linux_all"] = new_all_checked
-                st.rerun()
-            
-            if category_selected or server_linux_all:
-                with st.expander(f"{category} 세부 항목", expanded=False):
-                    category_items = {}
+        if server_linux_all:
+            st.success("✅ Server-Linux 전체 36개 항목 선택됨")
+        else:
+            with st.expander("📋 Server-Linux 세부 카테고리 선택"):
+                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_server_linux_{category}"
+                    )
                     
-                    for item in items:
-                        item_key = f"item_{item}"
-                        item_current = st.session_state.get(item_key, False)
-                        
-                        item_selected = st.checkbox(
-                            item, 
-                            key=item_key,
-                            value=item_current,
-                            disabled=server_linux_all or category_selected
-                        )
-                        
-                        # 개별 항목 상태 변화 감지 (disabled가 아닐 때만)
-                        if not (server_linux_all or category_selected):
-                            if item_selected != individual_states[category][item]:
-                                # 카테고리 상태 확인
-                                category_all_checked = all(
-                                    st.session_state.get(f"item_{it}", False) 
-                                    for it in items
-                                )
-                                st.session_state[category_key] = category_all_checked
-                                
-                                # 전체 상태 확인
-                                _, _, new_all_checked = sync_checkbox_states()
-                                st.session_state["server_linux_all"] = new_all_checked
-                                st.rerun()
-                        
-                        category_items[item] = item_selected
-                    
-                    selected_checks["Server-Linux"]["categories"][category] = category_items
-            else:
-                selected_checks["Server-Linux"]["categories"][category] = {}
-            
-            if "PC-Linux" in available_services:
-                pc_linux_selected = st.checkbox("PC-Linux 전체 (12개)", key="pc_linux_all")
-                selected_checks["PC-Linux"] = pc_linux_selected
+                    if category_selected:
+                        category_items = {}
+                        for item in items:
+                            item_selected = st.checkbox(
+                                item, 
+                                key=f"item_server_linux_{item}", 
+                                value=True
+                            )
+                            category_items[item] = item_selected
+                        selected_checks["Server-Linux"]["categories"][category] = category_items
         
-        with col2:
-            st.markdown("**💾 데이터베이스 & 웹서비스**")
-            
-            if "MySQL" in available_services:
-                mysql_selected = st.checkbox("MySQL 보안 점검 (9개)", key="mysql_all")
-                selected_checks["MySQL"] = mysql_selected
-                
-            if "Apache" in available_services:
-                apache_selected = st.checkbox("Apache 보안 점검 (7개)", key="apache_all") 
-                selected_checks["Apache"] = apache_selected
-                
-            if "Nginx" in available_services:
-                nginx_selected = st.checkbox("Nginx 보안 점검 (7개)", key="nginx_all")
-                selected_checks["Nginx"] = nginx_selected
-                
-            if "PHP" in available_services:
-                php_selected = st.checkbox("PHP 보안 점검 (6개)", key="php_all")
-                selected_checks["PHP"] = php_selected
-                
-            if "SQLite" in available_services:
-                sqlite_selected = st.checkbox("SQLite 보안 점검 (6개)", key="sqlite_all")
-                selected_checks["SQLite"] = sqlite_selected
-            
-            if "WebApp" in available_services:
-                webapp_selected = st.checkbox("WebApp 보안 점검", key="webapp_all")
-                selected_checks["WebApp"] = webapp_selected
-
-# 정적 분석은 활성화되었지만 서버가 선택되지 않은 경우
-elif static_enabled and not active_servers:
+        st.markdown("---")
+        
+        # PC-Linux
+        pc_linux_all = st.checkbox("🖥️ PC-Linux 전체 (12개)", key="pc_linux_all")
+        selected_checks["PC-Linux"] = {"all": pc_linux_all, "categories": {}}
+        
+        if pc_linux_all:
+            st.success("✅ PC-Linux 전체 12개 항목 선택됨")
+        else:
+            with st.expander("📋 PC-Linux 세부 카테고리 선택"):
+                for category, items in vulnerability_categories["PC-Linux"]["subcategories"].items():
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_pc_linux_{category}"
+                    )
+                    
+                    if category_selected:
+                        category_items = {}
+                        for item in items:
+                            item_selected = st.checkbox(
+                                item, 
+                                key=f"item_pc_linux_{item}", 
+                                value=True
+                            )
+                            category_items[item] = item_selected
+                        selected_checks["PC-Linux"]["categories"][category] = category_items
+    
+    with col2:
+        st.markdown("### 💾 데이터베이스 & 웹서비스")
+        
+        # MySQL
+        mysql_all = st.checkbox("🐬 MySQL 보안 점검 (9개)", key="mysql_all")
+        selected_checks["MySQL"] = {"all": mysql_all, "categories": {}}
+        
+        if mysql_all:
+            st.success("✅ MySQL 전체 9개 항목 선택됨")
+        else:
+            with st.expander("📋 MySQL 세부 카테고리 선택"):
+                for category, items in vulnerability_categories["MySQL"]["subcategories"].items():
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_mysql_{category}"
+                    )
+                    
+                    if category_selected:
+                        category_items = {}
+                        for item in items:
+                            item_selected = st.checkbox(
+                                item, 
+                                key=f"item_mysql_{item}", 
+                                value=True
+                            )
+                            category_items[item] = item_selected
+                        selected_checks["MySQL"]["categories"][category] = category_items
+        
+        # Apache  
+        apache_all = st.checkbox("🪶 Apache 보안 점검 (7개)", key="apache_all")
+        selected_checks["Apache"] = {"all": apache_all, "categories": {}}
+        
+        if apache_all:
+            st.success("✅ Apache 전체 7개 항목 선택됨")
+        else:
+            with st.expander("📋 Apache 세부 카테고리 선택"):
+                for category, items in vulnerability_categories["Apache"]["subcategories"].items():
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_apache_{category}"
+                    )
+                    
+                    if category_selected:
+                        category_items = {}
+                        for item in items:
+                            item_selected = st.checkbox(
+                                item, 
+                                key=f"item_apache_{item}", 
+                                value=True
+                            )
+                            category_items[item] = item_selected
+                        selected_checks["Apache"]["categories"][category] = category_items
+        
+        # Nginx
+        nginx_all = st.checkbox("⚡ Nginx 보안 점검 (7개)", key="nginx_all")
+        selected_checks["Nginx"] = {"all": nginx_all, "categories": {}}
+        
+        if nginx_all:
+            st.success("✅ Nginx 전체 7개 항목 선택됨")
+        else:
+            with st.expander("📋 Nginx 세부 카테고리 선택"):
+                for category, items in vulnerability_categories["Nginx"]["subcategories"].items():
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_nginx_{category}"
+                    )
+                    
+                    if category_selected:
+                        category_items = {}
+                        for item in items:
+                            item_selected = st.checkbox(
+                                item, 
+                                key=f"item_nginx_{item}", 
+                                value=True
+                            )
+                            category_items[item] = item_selected
+                        selected_checks["Nginx"]["categories"][category] = category_items
+        
+        # PHP
+        php_all = st.checkbox("🐘 PHP 보안 점검 (6개)", key="php_all")
+        selected_checks["PHP"] = {"all": php_all, "categories": {}}
+        
+        if php_all:
+            st.success("✅ PHP 전체 6개 항목 선택됨")
+        else:
+            with st.expander("📋 PHP 세부 카테고리 선택"):
+                for category, items in vulnerability_categories["PHP"]["subcategories"].items():
+                    category_selected = st.checkbox(
+                        f"{category} ({len(items)}개)", 
+                        key=f"category_php_{category}"
+                    )
+                    
+                    if category_selected:
+                        category_items = {}
+                        for item in items:
+                            item_selected = st.checkbox(
+                                item, 
+                                key=f"item_php_{item}", 
+                                value=True
+                            )
+                            category_items[item] = item_selected
+                        selected_checks["PHP"]["categories"][category] = category_items
+    
+    # 선택 요약 표시
     st.markdown("---")
+    
+    col_summary1, col_summary2, col_summary3 = st.columns(3)
+    
+    with col_summary1:
+        total_selected = count_selected_checks(selected_checks, vulnerability_categories)
+        st.metric("선택된 점검 항목", f"{total_selected}개", f"총 77개 중")
+    
+    with col_summary2:
+        if total_selected > 0:
+            st.success(f"✅ {total_selected}개 점검 준비 완료")
+        else:
+            st.warning("⚠️ 점검 항목을 선택해주세요")
+    
+    with col_summary3:
+        estimated_time = len(active_servers) * (total_selected // 10) if total_selected > 0 else 0
+        st.info(f"⏱️ 예상 소요시간: {estimated_time}분")
+                    
+# 정적 분석은 활성화되었지만 서버가 선택되지 않은 경우
+elif not active_servers:
     st.info("📋 대상 서버를 선택하면 해당 서버의 취약점 점검 항목을 설정할 수 있습니다.")
 
 st.markdown("---")
@@ -351,7 +413,7 @@ if 'selected_checks' not in st.session_state:
 if 'result_folder_path' not in st.session_state:
     st.session_state.result_folder_path = ""
 
-if active_servers and static_enabled and vulnerability_categories:
+if active_servers and vulnerability_categories:
     # 취약점 점검 시작 버튼
     if not st.session_state.playbook_generated:
         if st.button("🔍 취약점 점검 시작", type="primary", use_container_width=True):
@@ -410,13 +472,45 @@ if active_servers and static_enabled and vulnerability_categories:
         # 생성된 플레이북 정보 표시
         st.success("✅ 플레이북 생성 및 저장 완료!")
         
-        # 선택된 점검 항목 카운트
+        # 선택된 점검 항목 카운트 및 서비스별 상세 목록 생성
         total_checks = count_selected_checks(st.session_state.selected_checks, vulnerability_categories)
         
+        # 서비스별로 선택된 항목들 정리
+        selected_by_service = {}
+        
+        for service, selected in st.session_state.selected_checks.items():
+            if service in ["Server-Linux", "PC-Linux", "MySQL", "Apache", "Nginx", "PHP"] and isinstance(selected, dict):
+                service_tasks = []
+                
+                if selected.get("all", False):
+                    # 전체 선택 시 모든 항목 추가
+                    for category, items in vulnerability_categories[service]["subcategories"].items():
+                        service_tasks.extend(items)
+                else:
+                    # 개별 선택된 항목만 추가
+                    categories = selected.get("categories", {})
+                    for category, items in categories.items():
+                        if isinstance(items, dict):
+                            for item, item_selected in items.items():
+                                if item_selected:
+                                    service_tasks.append(item)
+                
+                if service_tasks:
+                    selected_by_service[service] = service_tasks
+            
+            elif selected and service in vulnerability_categories:
+                # 단순 boolean 선택 방식
+                service_tasks = []
+                for category, items in vulnerability_categories[service]["subcategories"].items():
+                    service_tasks.extend(items)
+                if service_tasks:
+                    selected_by_service[service] = service_tasks
+        
+        # 기본 정보
         playbook_info = {
             "대상 서버": active_servers,
             "총 점검 항목": f"{total_checks}개",
-            "점검 서비스": list(st.session_state.selected_checks.keys()),
+            "점검 서비스": list(selected_by_service.keys()),
             "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
             "저장 경로": st.session_state.playbook_path,
             "inventory 파일": st.session_state.inventory_path,
@@ -425,8 +519,36 @@ if active_servers and static_enabled and vulnerability_categories:
             "예상 소요 시간": f"{len(active_servers) * 3}분"
         }
         
+        # 기본 정보 표시
         st.json(playbook_info)
         
+        # 선택된 점검 항목을 서비스별로 상세 표시
+        if selected_by_service:
+            st.subheader("📋 선택된 점검 항목 상세 목록")
+            
+            # 서비스별 탭 또는 expander로 표시
+            for service, tasks in selected_by_service.items():
+                service_icons = {
+                    "Server-Linux": "🐧",
+                    "PC-Linux": "🖥️", 
+                    "MySQL": "🐬",
+                    "Apache": "🪶",
+                    "Nginx": "⚡",
+                    "PHP": "🐘"
+                }
+                
+                icon = service_icons.get(service, "📦")
+                
+                with st.expander(f"{icon} {service} ({len(tasks)}개 점검 항목)", expanded=True):
+                    for i, task in enumerate(tasks, 1):
+                        st.markdown(f"{i}. {task}")
+            
+            # 요약 정보
+            st.info(f"💡 총 {len(selected_by_service)}개 서비스에서 {total_checks}개 점검 항목이 선택되었습니다.")
+        
+        else:
+            st.warning("⚠️ 선택된 점검 항목이 없습니다.")
+                    
         # 실행 경고 메시지
         st.warning("⚠️ 실제 서버에 변경 사항이 적용됩니다!")
         if st.button("▶️ 실행 시작 (생성된 Ansible 플레이북을 실제로 실행)", type="secondary", use_container_width=True):
@@ -532,7 +654,7 @@ if active_servers and static_enabled and vulnerability_categories:
                 
             # 최종 실행 결과 요약
             st.subheader("📊 실행 결과 요약")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("✅ 성공", f"{result_summary['성공한 태스크']}개")
             with col2:
@@ -540,6 +662,8 @@ if active_servers and static_enabled and vulnerability_categories:
             with col3:
                 st.metric("❌ 실패", f"{result_summary['실패한 태스크']}개")
             with col4:
+                st.metric("⚠️ 무시됨", f"{result_summary['무시된 태스크']}개")
+            with col5:
                 st.metric("🚫 접근불가", f"{result_summary['접근 불가 서버']}개")
                 
             # 서버별 상세 결과 표시 (추가 기능)

@@ -1,0 +1,120 @@
+- name: MySQL 타 사용자 GRANT OPTION 권한 보유 진단
+  hosts: target_servers
+  become: yes
+  gather_facts: no
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "mysql_grant_option_priv.yml"
+    result_json_path: "/tmp/security_report_mysql_grant_option_priv.json"
+    manual_remediation_guide: "root와 시스템 계정을 제외한 사용자에게 부여된 GRANT OPTION을 회수하십시오. (예: REVOKE GRANT OPTION ON *.* FROM 'someuser'@'localhost'; FLUSH PRIVILEGES;)"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (MySQL 설치 여부)
+    # ----------------------------------------------------------------
+    - name: MySQL 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which mysql
+      register: mysql_installed
+      changed_when: false
+      failed_when: false
+
+    - name: MySQL 미설치 시 작업 종료
+      when: mysql_installed.rc != 0
+      block:
+        - name: MySQL 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "MySQL이 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: root가 아닌 사용자에게 GRANT OPTION이 있는지 진단
+      ansible.builtin.shell: "mysql -NBe \"SELECT User, Host FROM mysql.user WHERE Grant_priv = 'Y' AND User NOT IN ('root', 'mysql.sys');\" | grep ."
+      register: grant_priv_check
+      changed_when: false
+      failed_when: false # grep이 아무것도 못찾아도(rc=1) 오류가 아님
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ grant_priv_check.rc == 0 }}" # grep이 결과를 찾으면(rc=0) 취약
+        vulnerable_users: "{{ grant_priv_check.stdout_lines | default([]) }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (root 외의 사용자가 GRANT OPTION을 보유: {{ vulnerable_users }}){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "MySQL 타 사용자 GRANT OPTION 권한 보유 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "root가 아닌 사용자에게 GRANT OPTION이 부여되었습니다." if is_vulnerable else "양호합니다.",
+                "vulnerable_users": vulnerable_users
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 자동 조치 건너뛰기 알림
+      ansible.builtin.debug:
+        msg: "이 항목은 보안 민감도가 높아 자동 조치를 수행하지 않습니다. 수동 조치가 필요합니다."
+      when: is_vulnerable
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록 (수동 조치 필요)
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: ["자동 조치 미수행 (수동 조치 필요)"]
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          권한 회수 대상: {{ vulnerable_users }}
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': false,
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if is_vulnerable else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: no

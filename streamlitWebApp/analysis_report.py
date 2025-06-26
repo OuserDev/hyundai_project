@@ -116,11 +116,11 @@ def load_timestamp_results(timestamp):
     }, None
 
 def create_security_improvement_analysis(df):
-    """보안 개선 효과 분석 (실질적 상태 반영) - 최종 수정 버전"""
+    """보안 개선 효과 분석 (ignore 항목 반영)"""
     if df.empty:
         return None, None, None
         
-    # 실질적 상태가 없으면 생성
+    # 실질적 상태가 없으면 생성 (ignore 고려)
     if '실질적_양호상태' not in df.columns:
         df['실질적_양호상태'] = (
             (df['전체 취약 여부'] == False) | 
@@ -139,50 +139,64 @@ def create_security_improvement_analysis(df):
         (df['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))
     ]
     
-    # 3. 여전히 취약 (조치 실패 또는 미조치)
-    still_vulnerable = df[df['실질적_양호상태'] == False]
+    # 3. 조치 시도했지만 실패/무시됨
+    attempted_but_failed = df[
+        (df['조치 여부'] == True) & 
+        (df['조치 결과'].str.contains("실패|오류|ERROR|FAILED|무시|ignore|건너뛰|skip", case=False, na=False))
+    ]
     
-    # 통계 데이터 생성
+    # 4. 여전히 취약 (조치 안됨)
+    still_vulnerable = df[
+        (df['실질적_양호상태'] == False) & 
+        (df['조치 여부'] == False)
+    ]
+    
+    # 통계 데이터 생성 (4개 카테고리)
     improvement_stats = pd.DataFrame({
-        '항목': ['원래부터 양호', '조치 후 양호', '여전히 취약'],
-        '개수': [len(originally_safe), len(remediated_safe), len(still_vulnerable)],
+        '항목': ['원래부터 양호', '조치 후 양호', '조치 시도(실패/무시)', '여전히 취약'],
+        '개수': [len(originally_safe), len(remediated_safe), len(attempted_but_failed), len(still_vulnerable)],
         '비율(%)': [
             len(originally_safe) / len(df) * 100,
-            len(remediated_safe) / len(df) * 100, 
+            len(remediated_safe) / len(df) * 100,
+            len(attempted_but_failed) / len(df) * 100,
             len(still_vulnerable) / len(df) * 100
         ]
     })
     
-    # 파이 차트 생성
+    # 파이 차트 생성 (4개 카테고리)
     fig1 = px.pie(
         improvement_stats,
         values='개수',
         names='항목',
-        title="보안 상태 분포 (실질적 상태 반영)",
+        title="보안 상태 분포 (조치 시도 포함)",
         color_discrete_map={
-            '원래부터 양호': '#28a745',      # 녹색
-            '조치 후 양호': '#17a2b8',       # 청록색  
-            '여전히 취약': '#dc3545'         # 빨간색
+            '원래부터 양호': '#28a745',        # 녹색
+            '조치 후 양호': '#17a2b8',         # 청록색  
+            '조치 시도(실패/무시)': '#ffc107', # 노란색
+            '여전히 취약': '#dc3545'           # 빨간색
         }
     )
     
-    # 서버별 개선 효과 차트
+    # 서버별 개선 효과 차트 (4개 카테고리)
     server_improvement = df.groupby('호스트').apply(lambda x: pd.Series({
         '원래_양호': len(x[(x['실질적_양호상태'] == True) & (x['조치 여부'] == False)]),
         '조치_후_양호': len(x[(x['조치 여부'] == True) & 
                             (x['조치 결과'].str.contains("조치 완료|완료|성공", case=False, na=False))]),
-        '여전히_취약': len(x[x['실질적_양호상태'] == False])
+        '조치_시도_실패': len(x[(x['조치 여부'] == True) & 
+                             (x['조치 결과'].str.contains("실패|오류|ERROR|FAILED|무시|ignore|건너뛰|skip", case=False, na=False))]),
+        '여전히_취약': len(x[(x['실질적_양호상태'] == False) & (x['조치 여부'] == False)])
     })).reset_index()
     
     fig2 = px.bar(
         server_improvement,
         x='호스트',
-        y=['원래_양호', '조치_후_양호', '여전히_취약'],
-        title="서버별 보안 개선 효과 (실질적 상태)",
+        y=['원래_양호', '조치_후_양호', '조치_시도_실패', '여전히_취약'],
+        title="서버별 보안 개선 효과 (조치 시도 포함)",
         labels={'value': '항목 수', 'variable': '상태'},
         color_discrete_map={
             '원래_양호': '#28a745',
-            '조치_후_양호': '#17a2b8', 
+            '조치_후_양고': '#17a2b8', 
+            '조치_시도_실패': '#ffc107',
             '여전히_취약': '#dc3545'
         }
     )
@@ -191,9 +205,121 @@ def create_security_improvement_analysis(df):
     return fig1, fig2, {
         'originally_safe': originally_safe,
         'remediated_safe': remediated_safe,
+        'attempted_but_failed': attempted_but_failed,
         'still_vulnerable': still_vulnerable,
         'stats': improvement_stats
     }
+    
+def create_failure_analysis(df):
+    """실패한 작업들에 대한 상세 분석 (ignore 포함)"""
+    if df.empty:
+        return None, None, None
+    
+    # ignore된 항목들과 실패한 항목들 모두 포함
+    failed_items = df[
+        (df['조치 여부'] == True) & 
+        (df['조치 결과'].str.contains("실패|오류|ERROR|FAILED|무시|ignore|건너뛰|skip", case=False, na=False))
+    ]
+    
+    if len(failed_items) == 0:
+        return None, None, {"message": "실패하거나 무시된 작업이 없습니다."}
+    
+    # 실패 유형 재분류
+    def categorize_failure_type(result):
+        result_lower = str(result).lower()
+        if any(word in result_lower for word in ['무시', 'ignore', 'ignored']):
+            return 'Ignored (무시됨)'
+        elif any(word in result_lower for word in ['건너뛰', 'skip', 'skipped']):
+            return 'Skipped (건너뜀)'
+        elif any(word in result_lower for word in ['실패', 'failed', 'error']):
+            return 'Failed (실패)'
+        else:
+            return 'Other (기타)'
+    
+    failed_items_copy = failed_items.copy()
+    failed_items_copy['실패_유형'] = failed_items_copy['조치 결과'].apply(categorize_failure_type)
+    
+    # 1. 실패 유형별 분류
+    failure_types = failed_items_copy.groupby('실패_유형').size().reset_index(name='count')
+    
+    fig1 = px.pie(
+        failure_types,
+        values='count',
+        names='실패_유형',
+        title="실행 문제 유형별 분포 (실패/무시/건너뜀)",
+        color_discrete_map={
+            'Failed (실패)': '#ff4444',
+            'Ignored (무시됨)': '#ff8800', 
+            'Skipped (건너뜀)': '#ffcc00',
+            'Other (기타)': '#888888'
+        }
+    )
+        
+    # 2. 서버별 실패 현황
+    server_failures = failed_items.groupby('호스트').agg({
+        '작업 설명': 'count',
+        '조치 결과': lambda x: list(x.unique())
+    }).reset_index()
+    server_failures.columns = ['서버명', '실패_개수', '실패_유형들']
+    
+    fig2 = px.bar(
+        server_failures,
+        x='서버명',
+        y='실패_개수',
+        title="서버별 실패한 작업 수",
+        color='실패_개수',
+        color_continuous_scale='Reds'
+    )
+    fig2.update_layout(height=400)
+    
+    # 3. 실패 상세 데이터
+    failure_details = {
+        'total_failures': len(failed_items),
+        'affected_servers': len(failed_items['호스트'].unique()),
+        'failure_types': failure_types.to_dict('records'),
+        'server_breakdown': server_failures.to_dict('records'),
+        'detailed_failures': failed_items[['호스트', '작업 설명', '조치 결과', '취약 사유']].to_dict('records')
+    }
+    
+    return fig1, fig2, failure_details
+
+def create_unreachable_hosts_analysis(df, result_data):
+    """접근 불가능한 호스트 분석"""
+    # 모든 서버 vs 실제 결과가 있는 서버 비교
+    expected_servers = set(result_data.get('servers', []))
+    actual_servers = set(df['호스트'].unique()) if not df.empty else set()
+    
+    unreachable_servers = expected_servers - actual_servers
+    
+    if not unreachable_servers:
+        return None, {"message": "모든 서버가 정상적으로 접근 가능합니다."}
+    
+    unreachable_data = pd.DataFrame({
+        '서버명': list(unreachable_servers),
+        '상태': ['접근 불가'] * len(unreachable_servers)
+    })
+    
+    fig = px.bar(
+        unreachable_data,
+        x='서버명',
+        y=[1] * len(unreachable_servers),
+        title="접근 불가능한 서버 목록",
+        color_discrete_sequence=['#ff4444']
+    )
+    fig.update_layout(
+        height=300,
+        yaxis_title="서버 수",
+        showlegend=False
+    )
+    
+    analysis_data = {
+        'total_unreachable': len(unreachable_servers),
+        'unreachable_servers': list(unreachable_servers),
+        'reachable_servers': list(actual_servers),
+        'success_rate': len(actual_servers) / len(expected_servers) * 100 if expected_servers else 0
+    }
+    
+    return fig, analysis_data
 
 def create_vulnerability_severity_chart(df):
     """취약점 심각도별 차트 생성 (실질적 상태 반영, 조치 후 양호 구분)"""
@@ -925,7 +1051,7 @@ def main(timestamp=None):
     
     with tab3:
         # === 취약점 상세 ===
-        st.header("🔍 취약점 상세 분석")
+        st.header("🔍 취약점 및 실패 상세 분석")
         
         # 실질적으로 취약한 항목만 표시 (조치 완료 제외)
         vulnerable_df = df[df['실질적_양호상태'] == False]
@@ -1014,6 +1140,85 @@ def main(timestamp=None):
                         if row['현재 소유자']:
                             tech_details.append(f"현재 소유자: `{row['현재 소유자']}`")
                         st.markdown(" | ".join(tech_details))
+        
+        # 🆕 실패 분석 섹션 추가
+        st.markdown("---")
+        st.subheader("❌ 실행 실패 분석")
+        
+        # 실패한 작업 분석
+        fig_fail1, fig_fail2, failure_data = create_failure_analysis(df)
+        
+        if failure_data and 'message' in failure_data:
+            st.success("✅ " + failure_data['message'])
+        elif failure_data:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("총 실패 작업", failure_data['total_failures'])
+            with col2:
+                st.metric("영향받은 서버", failure_data['affected_servers'])
+            with col3:
+                failure_rate = failure_data['total_failures'] / len(df) * 100 if len(df) > 0 else 0
+                st.metric("실패율", f"{failure_rate:.1f}%")
+            
+            # 실패 차트
+            if fig_fail1 and fig_fail2:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.plotly_chart(fig_fail1, use_container_width=True)
+                with col2:
+                    st.plotly_chart(fig_fail2, use_container_width=True)
+            
+            # 실패 상세 목록
+            with st.expander("🔍 실패한 작업 상세 목록", expanded=False):
+                for failure in failure_data['detailed_failures']:
+                    st.markdown(f"**{failure['호스트']}** - {failure['작업 설명']}")
+                    st.markdown(f"- 실패 사유: {failure['조치 결과']}")
+                    if failure['취약 사유']:
+                        st.markdown(f"- 원인: {failure['취약 사유']}")
+                    st.markdown("---")
+        
+        # 🆕 접근 불가능한 서버 분석
+        st.subheader("🔌 서버 접근성 분석")
+        
+        fig_unreachable, unreachable_data = create_unreachable_hosts_analysis(df, result_data)
+        
+        if unreachable_data and 'message' in unreachable_data:
+            st.success("✅ " + unreachable_data['message'])
+        elif unreachable_data:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("접근 불가 서버", unreachable_data['total_unreachable'])
+            with col2:
+                st.metric("접근 가능 서버", len(unreachable_data['reachable_servers']))
+            with col3:
+                st.metric("접근 성공률", f"{unreachable_data['success_rate']:.1f}%")
+            
+            if fig_unreachable:
+                st.plotly_chart(fig_unreachable, use_container_width=True)
+            
+            # 접근 불가 서버 목록
+            if unreachable_data['unreachable_servers']:
+                with st.expander("⚠️ 접근 불가능한 서버 목록"):
+                    for server in unreachable_data['unreachable_servers']:
+                        st.markdown(f"- **{server}**: 네트워크 연결 실패 또는 SSH 접근 불가")
+                        
+                    st.info("💡 해결 방법: SSH 키 설정, 네트워크 연결, 방화벽 설정을 확인하세요.")
+                    
+            # 조치 시도했지만 무시된 항목들 별도 표시
+            ignored_items = df[(df['조치 여부'] == True) & 
+                            (df['조치 결과'].str.contains("무시|ignore", case=False, na=False))]
+
+            if len(ignored_items) > 0:
+                st.subheader(f"⚠️ 조치 시도했지만 무시된 항목들 ({len(ignored_items)}개)")
+                st.info("💡 이 항목들은 실행 중 문제가 발생했지만 ignore_errors 설정으로 전체 실행은 계속되었습니다.")
+                
+                with st.expander("🔧 무시된 항목들 상세보기"):
+                    for idx, row in ignored_items.iterrows():
+                        st.markdown(f"**{row['호스트']}** - {row['작업 설명']}")
+                        st.markdown(f"- 상태: {row['조치 결과']}")
+                        if row['취약 사유']:
+                            st.markdown(f"- 원인: {row['취약 사유']}")
+                        st.markdown("---")
     
     with tab4:
         # === 실행 분석 ===
@@ -1038,6 +1243,26 @@ def main(timestamp=None):
                 st.metric("⏱️ 전체 실행 시간", execution_time)
             
             st.metric("📊 평균 서버당 점검", f"{len(df) / len(result_data['servers']) if result_data['servers'] else 0:.1f}개 점검/서버")
+        
+        # 🆕 실패 현황 메트릭 추가 (ignore 포함)
+        attempted_failed_tasks = len(df[df['조치 결과'].str.contains("실패|오류|ERROR|FAILED|무시|ignore|건너뛰|skip", case=False, na=False)])
+        ignored_tasks = len(df[df['조치 결과'].str.contains("무시|ignore", case=False, na=False)])
+        unreachable_count = len(set(result_data.get('servers', [])) - set(df['호스트'].unique()))
+
+        col5, col6 = st.columns(2)
+        with col5:
+            if attempted_failed_tasks > 0:
+                st.warning(f"⚠️ **{attempted_failed_tasks}**개 조치 문제")
+                if ignored_tasks > 0:
+                    st.caption(f"└ 그 중 {ignored_tasks}개는 무시됨")
+            else:
+                st.success("✅ **모든 조치 성공**")
+
+        with col6:
+            if unreachable_count > 0:
+                st.warning(f"🔌 **{unreachable_count}**개 서버 접근불가")
+            else:
+                st.success("🌐 **모든 서버 접근가능**")
         
         with col2:
             # 실질적 성공률

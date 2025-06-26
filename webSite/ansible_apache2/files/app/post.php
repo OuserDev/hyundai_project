@@ -179,9 +179,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             savePostImages($pdo, $post_id, $uploaded_images);
                         }
                         if (!empty($uploaded_attachments)) {
-                            savePostAttachments($pdo, $post_id, $uploaded_attachments);
+                            savePostFiles($pdo, $post_id, $uploaded_attachments);
                         }
-                        
                         $pdo->commit();
                         setSuccessMessage('게시글이 수정되었습니다.');
                         header("Location: dashboard.php");

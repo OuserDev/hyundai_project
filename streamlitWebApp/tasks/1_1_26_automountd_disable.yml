@@ -1,6 +1,9 @@
 ---
 - name: 진단 및 조치 - automountd 서비스 비활성화
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: yes
 

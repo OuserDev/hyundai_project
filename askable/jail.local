@@ -1,0 +1,53 @@
+#/etc/fail2ban/jail.local
+
+[DEFAULT]
+bantime  = 10m
+findtime  = 10m
+maxretry = 5
+
+# 시스템에서 자기자신은 차단하지 않도록
+ignoreself = true
+ignoreip = 127.0.0.1/8 ::1
+
+# 우리는 이메일 대신 NC 기반 통보를 쓸 예정이므로 기본 action만 ban만 적용
+banaction = iptables-multiport
+action = %(action_)s
+
+# SSH 보호
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = %(sshd_log)s
+backend  = %(sshd_backend)s
+action  = askable-nc
+
+# Apache 기본 인증 실패 보호
+[apache-auth]
+enabled  = true
+port     = http,https
+logpath  = %(apache_error_log)s
+
+# Apache badbots (스팸봇 탐지)
+[apache-badbots]
+enabled  = true
+port     = http,https
+logpath  = %(apache_access_log)s
+bantime  = 48h
+maxretry = 1
+
+# PHP URL fopen 공격 탐지
+[php-url-fopen]
+enabled  = true
+port     = http,https
+logpath  = %(nginx_access_log)s
+           %(apache_access_log)s
+
+# nginx-auth가 필요하면 여기에 추가 가능 (지금 apache만 활성화)
+
+# Recidive (지속 반복 공격자 장기차단)
+[recidive]
+enabled  = true
+logpath  = /var/log/fail2ban.log
+banaction = iptables-allports
+bantime  = 1w
+findtime = 1d

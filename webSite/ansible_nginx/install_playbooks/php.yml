@@ -1,0 +1,103 @@
+---
+- name: PHP 레포지토리 추가
+  apt_repository:
+    repo: "ppa:ondrej/php"
+    state: present
+  tags: ["php", "install"]
+
+- name: PHP 패키지 설치 (FPM 포함)
+  apt:
+    name:
+      - "php{{ php_version }}"
+      - "php{{ php_version }}-cli"
+      - "php{{ php_version }}-fpm"
+      - "php{{ php_version }}-mysql"
+      - "php{{ php_version }}-curl"
+      - "php{{ php_version }}-gd"
+      - "php{{ php_version }}-mbstring"
+      - "php{{ php_version }}-xml"
+      - "php{{ php_version }}-zip"
+      - "php{{ php_version }}-intl"
+      - "php{{ php_version }}-bcmath"
+    state: present
+    update_cache: yes
+  tags: ["php", "install"]
+
+- name: Start and enable PHP-FPM
+  systemd:
+    name: "php{{ php_version }}-fpm"
+    enabled: yes
+    state: started
+  tags: ["php", "service"]
+
+- name: PHP 설정 파일 업데이트 (FPM)
+  lineinfile:
+    path: "/etc/php/{{ php_version }}/fpm/php.ini"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^upload_max_filesize', line: "upload_max_filesize = {{ php_upload_max_filesize }}" }
+    - { regexp: '^post_max_size', line: "post_max_size = {{ php_post_max_size }}" }
+    - { regexp: '^max_file_uploads', line: "max_file_uploads = {{ php_max_file_uploads }}" }
+    - { regexp: '^memory_limit', line: "memory_limit = {{ php_memory_limit }}" }
+    - { regexp: '^max_execution_time', line: "max_execution_time = 120" }
+    - { regexp: '^max_input_time', line: "max_input_time = 120" }
+    - { regexp: '^max_input_vars', line: "max_input_vars = 3000" }
+    - { regexp: '^expose_php', line: "expose_php = Off" }
+  notify: restart php-fpm
+  tags: ["php", "config"]
+
+- name: PHP 설정 파일 업데이트 (CLI)
+  lineinfile:
+    path: "/etc/php/{{ php_version }}/cli/php.ini"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^upload_max_filesize', line: "upload_max_filesize = {{ php_upload_max_filesize }}" }
+    - { regexp: '^post_max_size', line: "post_max_size = {{ php_post_max_size }}" }
+    - { regexp: '^memory_limit', line: "memory_limit = {{ php_memory_limit }}" }
+  tags: ["php", "config"]
+
+- name: PHP-FPM pool 설정 업데이트
+  lineinfile:
+    path: "/etc/php/{{ php_version }}/fpm/pool.d/www.conf"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^user = ', line: "user = www-data" }
+    - { regexp: '^group = ', line: "group = www-data" }
+    - { regexp: '^pm = ', line: "pm = dynamic" }
+    - { regexp: '^pm.max_children = ', line: "pm.max_children = 50" }
+    - { regexp: '^pm.start_servers = ', line: "pm.start_servers = 5" }
+    - { regexp: '^pm.min_spare_servers = ', line: "pm.min_spare_servers = 5" }
+    - { regexp: '^pm.max_spare_servers = ', line: "pm.max_spare_servers = 10" }
+    - { regexp: '^pm.max_requests = ', line: "pm.max_requests = 500" }
+  notify: restart php-fpm
+  tags: ["php", "config"]
+
+- name: PHP-FPM 보안 설정
+  lineinfile:
+    path: "/etc/php/{{ php_version }}/fpm/pool.d/www.conf"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^;security.limit_extensions', line: "security.limit_extensions = .php" }
+    - { regexp: '^;env\[PATH\]', line: "env[PATH] = /usr/local/bin:/usr/bin:/bin" }
+  notify: restart php-fpm
+  tags: ["php", "security"]
+
+- name: Test PHP-FPM configuration
+  command: "php-fpm{{ php_version }} -t"
+  register: php_fpm_test
+  changed_when: false
+  failed_when: php_fpm_test.rc != 0
+  tags: ["php", "test"]
+
+- name: Show PHP-FPM test result
+  debug:
+    msg: "PHP-FPM configuration test: {{ 'PASSED' if php_fpm_test.rc == 0 else 'FAILED' }}"
+  tags: ["php", "test"]

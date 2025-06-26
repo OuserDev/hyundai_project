@@ -1,6 +1,9 @@
 ---
 - name: 진단 및 조치 - 소유자 없는 파일 및 디렉터리 관리
   hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
   become: yes
   gather_facts: yes
 

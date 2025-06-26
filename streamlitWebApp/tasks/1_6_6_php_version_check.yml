@@ -1,0 +1,135 @@
+- name: PHP 지원 종료(EOL) 버전 사용 여부 진단
+  hosts: target_servers
+  ignore_errors: true
+  ignore_unreachable: true
+  any_errors_fatal: false
+  become: yes
+  gather_facts: no
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "php_eol_version_check.yml"
+    manual_remediation_guide: "지원 종료된 PHP 버전을 사용하고 있습니다. 상위 버전으로 업그레이드해야 합니다. [주의] PHP 메이저 버전 업그레이드는 애플리케이션 호환성 문제를 유발할 수 있으므로, 반드시 사전에 전체 데이터를 백업하고 테스트 환경에서 충분히 검증한 후 진행해야 합니다."
+    # 보안 지원이 종료되었거나 임박한 버전 목록 (2025년 기준)
+    eol_php_versions:
+      - "5.6"
+      - "7.0"
+      - "7.1"
+      - "7.2"
+      - "7.3"
+      - "7.4"
+      - "8.0"
+      - "8.1"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (PHP 설치 여부)
+    # ----------------------------------------------------------------
+    - name: PHP 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which php
+      register: php_installed
+      changed_when: false
+      failed_when: false
+
+    - name: PHP 미설치 시 작업 종료
+      when: php_installed.rc != 0
+      block:
+        - name: PHP 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "PHP가 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: 현재 설치된 PHP 버전 확인
+      ansible.builtin.shell: "php -v | head -n 1 | awk '{print $2}'"
+      register: php_version_output
+      changed_when: false
+
+    - name: PHP 주 버전(Major.Minor) 추출
+      ansible.builtin.set_fact:
+        current_php_version: "{{ php_version_output.stdout }}"
+        current_major_version: "{{ php_version_output.stdout.split('.')[0] }}.{{ php_version_output.stdout.split('.')[1] }}"
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ current_major_version in eol_php_versions }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (지원 종료된 PHP 버전 {{ current_php_version }} 사용 중){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "PHP 지원 종료(EOL) 버전 사용 여부 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "보안 지원이 종료된(EOL) PHP 버전을 사용하고 있어 보안 위협에 노출될 수 있습니다." if is_vulnerable else "보안 지원이 활성화된 PHP 버전을 사용하고 있습니다.",
+                "current_version": current_php_version,
+                "eol_version_list": eol_php_versions
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 자동 조치 건너뛰기 알림
+      ansible.builtin.debug:
+        msg: "이 항목은 안정성 위험이 매우 높아 자동 조치를 수행하지 않습니다. 아래의 수동 조치가 필요합니다."
+      when: is_vulnerable
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록 (수동 조치 필요)
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: ["자동 조치 미수행 (수동 조치 필요)"]
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': false,
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if is_vulnerable else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes

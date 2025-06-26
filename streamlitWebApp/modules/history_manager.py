@@ -142,18 +142,32 @@ def load_analysis_history():
 """확장된 사이드바 렌더링 (개선된 버전)"""
 def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=None):
     
-    # 기존 Control Node 섹션
-    st.sidebar.title("🔧 Control Node")
-    st.sidebar.markdown("**Ansible 플레이북 제어**")
-    
     # 설정 파일 상태 표시 (기존 코드)
     if vulnerability_categories and filename_mapping:
         st.sidebar.success("✅ 설정 파일 로드 완료")
     else:
         st.sidebar.error("❌ 설정 파일 로드 실패")
     
-    st.sidebar.markdown("---")
+    # 분석 모듈 섹션
+    st.sidebar.markdown("## 🔍 분석 모듈")
     
+    # 정적 분석 (메인 페이지)로 이동 버튼
+    if st.sidebar.button("📋 정적 분석 (KISA 가이드)", use_container_width=True):
+        st.query_params.clear()  # 모든 쿼리 파라미터 제거해서 메인으로
+        st.rerun()
+    
+    # 동적 분석 - 포트스캐닝 페이지로 이동 버튼
+    if st.sidebar.button("🌐 포트 스캐닝 (nmap)", use_container_width=True):
+        st.query_params.update({"page": "port_scanning"})
+        st.rerun()
+    
+    # 동적 분석 - 웹 애플리케이션 테스트 페이지로 이동 버튼
+    if st.sidebar.button("🕷️ 웹 애플리케이션 테스트", use_container_width=True):
+        st.query_params.update({"page": "web_app_test"})
+        st.rerun()
+    
+    st.sidebar.markdown("---")
+                
     # 새로운 분석 기록 섹션
     st.sidebar.markdown("## 📊 분석 기록")
     
