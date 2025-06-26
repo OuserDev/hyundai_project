@@ -187,7 +187,7 @@ function sanitizeForLog($input) {
     return substr(trim($sanitized), 0, 100);
 }
 function logAuthAttempt($event_type, $username = '', $success = false, $additional_data = []) {
-    $client_ip = getClientIP(); // 프로젝트 기존 함수 사용
+    $client_ip = getNginxRealIP(); // 프로젝트 기존 함수 사용
     
     // 기본 로그 데이터 구성
     $log_data = [

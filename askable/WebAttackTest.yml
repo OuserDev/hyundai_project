@@ -5,8 +5,8 @@
   
   vars:
     attack_servers:
-      - 192.168.56.107
-      - 192.168.56.106
+      #- 192.168.56.108
+      - 192.168.56.109
       
     sql_payloads:
       - "' OR 1=1--"
@@ -66,27 +66,9 @@
 
     - name: "Create {{ item }}MB test file"
       shell: |
-        echo "Creating {{ item }}MB test file..."
         dd if=/dev/urandom of="{{ temp_directory }}/upload_test/test_{{ item }}mb.txt" bs=1M count={{ item }} 2>/dev/null
-        if [ $? -eq 0 ]; then
-          echo "File creation completed: test_{{ item }}mb.txt"
-          ls -lh "{{ temp_directory }}/upload_test/test_{{ item }}mb.txt"
-        else
-          echo "File creation failed"
-          exit 1
-        fi
       loop: "{{ file_sizes }}"
       register: file_creation_results
-
-    - name: Display file creation results
-      debug:
-        msg: |
-          ==========================================
-          File Size: {{ item.item }}MB
-          Creation Status: {{ 'SUCCESS' if item.rc == 0 else 'FAILED' }}
-          Output: {{ item.stdout_lines | join(' | ') }}
-          ==========================================
-      loop: "{{ file_creation_results.results }}"
 
     - name: "Test upload for {{ item }}MB file"
       uri:

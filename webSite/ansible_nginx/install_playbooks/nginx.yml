@@ -70,11 +70,14 @@
     state: restarted
   when: nginx_test.rc == 0
 
-- name: Configure firewall for HTTP/HTTPS
-  ufw:
-    rule: allow
-    port: "{{ item }}"
-    proto: tcp
+- name: iptables로 웹 포트 열기 (80, 443)
+  iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item }}"
+    ctstate: NEW,ESTABLISHED
+    jump: ACCEPT
+    comment: "Allow port {{ item }}"
   loop:
-    - "80"
-    - "443"
+    - 80
+    - 443
