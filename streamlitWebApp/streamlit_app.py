@@ -23,7 +23,7 @@ st.set_page_config(
 
 # --- 관리자 계정 정보 (여기서 아이디와 비밀번호를 수정하세요) ---
 ADMIN_USERNAME = "admin" # 관리자
-ADMIN_PASSWORD = "admin"
+ADMIN_PASSWORD = "ensiz8989!!"
 GUEST_USERNAME = "guest" # 일반유저
 GUEST_PASSWORD = "guest"
 
