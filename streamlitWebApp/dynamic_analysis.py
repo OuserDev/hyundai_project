@@ -4,26 +4,36 @@
 import streamlit as st
 
 def main():
-    """포트 스캐닝 메인 페이지"""
+    """동적 분석 메인 페이지"""
     
     # 메인 헤더
     st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("📋 정적 분석 (KISA 가이드)", use_container_width=True, key="btn_back_from_kisa"):
-            st.query_params.clear()  # 모든 쿼리 파라미터 제거해서 메인으로
-            st.rerun()
-
-    with col2:
-        if st.button("🕷️ 웹 애플리케이션 테스트", use_container_width=True, key="btn_back_from_webApp"):
-            st.query_params.update({"page": "web_app_test"})
-            st.rerun()
             
-    # 포트 스캐닝 UI
-    st.header("🌐 동적 분석 - Nmap 포트 스캐닝")
-    st.markdown("네트워크 포트 상태, 서비스 탐지, 취약점 스캔을 수행합니다.")
+    # 동적 분석 선택 UI
+    st.header("🔍 동적 분석 (Dynamic Analysis)")
+    st.markdown("실시간 보안 위협 탐지 및 공격 시뮬레이션을 수행합니다.")
+
+    # 동적 분석 유형 선택
+    analysis_type = st.selectbox(
+        "분석 유형 선택:",
+        ["Port 스캔 탐지", "SSH 브루트 포스 탐지", "SQL Injection 탐지"]
+    )
+
+    if analysis_type == "Port 스캔 탐지":
+        # 포트 스캔 UI
+        st.subheader("🌐 Port 스캔 탐지")
+        st.markdown("nmap을 활용한 네트워크 포트 상태 및 서비스 탐지")
+        
+    elif analysis_type == "SSH 브루트 포스 탐지":
+        # SSH 브루트포스 UI
+        st.subheader("🔑 SSH 브루트 포스 탐지")
+        st.markdown("SSH 서비스에 대한 무차별 대입 공격 시뮬레이션 및 탐지")
+        
+    elif analysis_type == "SQL Injection 탐지":
+        # SQL Injection UI
+        st.subheader("💉 SQL Injection 탐지")
+        st.markdown("웹 애플리케이션의 SQL 인젝션 취약점 테스트")
+    
     st.markdown("---")
     
     # 대상 설정

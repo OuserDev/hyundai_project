@@ -168,20 +168,20 @@ def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=
         
         # 분석 모듈 섹션
         st.sidebar.markdown("## 🔍 분석 모듈")
-    
+
         # 정적 분석 (메인 페이지)로 이동 버튼
-        if st.sidebar.button("📋 정적 분석 (KISA 가이드)", use_container_width=True):
+        if st.sidebar.button("📋 정적 분석 (KISA 가이드라인)", use_container_width=True):
             st.query_params.clear()  # 모든 쿼리 파라미터 제거해서 메인으로
             st.rerun()
-        
-        # 동적 분석 - 포트스캐닝 페이지로 이동 버튼
-        if st.sidebar.button("🌐 포트 스캐닝 (nmap)", use_container_width=True):
-            st.query_params.update({"page": "port_scanning"})
+
+        # 동적 분석 페이지로 이동 버튼
+        if st.sidebar.button("🔍 동적 분석 (Dynamic Analysis)", use_container_width=True):
+            st.query_params.update({"page": "dynamic_analysis"})
             st.rerun()
-        
-        # 동적 분석 - 웹 애플리케이션 테스트 페이지로 이동 버튼
-        if st.sidebar.button("🕷️ 웹 애플리케이션 테스트", use_container_width=True):
-            st.query_params.update({"page": "web_app_test"})
+
+        # 스케줄링 페이지로 이동 버튼
+        if st.sidebar.button("⏰ 스케줄링 (Scheduling)", use_container_width=True):
+            st.query_params.update({"page": "scheduling"})
             st.rerun()
     
     st.sidebar.markdown("---")
