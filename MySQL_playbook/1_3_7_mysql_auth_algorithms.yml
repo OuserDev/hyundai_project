@@ -1,49 +1,120 @@
----
-- name: 패스워드 암호화 알고리즘 진단
-  hosts: PostWebServers
+- name: MySQL 패스워드 암호화 알고리즘 진단
+  hosts: target_servers
   become: yes
+  gather_facts: no
 
-  vars_files:
-    - vars.yml
+  # 1. 변수 정의
+  vars:
+    playbook_name: "mysql_password_encryption.yml"
+    result_json_path: "/tmp/security_report_mysql_password_encryption.json"
+    manual_remediation_guide: "취약한 'mysql_native_password' 플러그인을 사용하는 사용자의 인증 방식을 'caching_sha2_password' 등으로 변경하십시오. (예: ALTER USER 'user'@'host' IDENTIFIED WITH 'caching_sha2_password' BY 'new_password'; FLUSH PRIVILEGES;)"
 
   tasks:
-    - name: MySQL 설치 여부 확인
-      command: which mysql
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (MySQL 설치 여부)
+    # ----------------------------------------------------------------
+    - name: MySQL 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which mysql
       register: mysql_installed
+      changed_when: false
       failed_when: false
 
-    - name: MySQL 미설치 시 종료
-      fail:
-        msg: "MySQL이 설치되어 있지 않습니다."
+    - name: MySQL 미설치 시 작업 종료
       when: mysql_installed.rc != 0
+      block:
+        - name: MySQL 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "MySQL이 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
 
-    - name: MySQL 서비스 상태 확인
-      systemd:
-        name: mysql
-      register: mysql_service_status
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: 'mysql_native_password' 사용 여부 진단
+      ansible.builtin.shell: "mysql -NBe \"SELECT User, Host FROM mysql.user WHERE plugin = 'mysql_native_password';\" | grep ."
+      register: plugin_check
+      changed_when: false
+      failed_when: false # grep이 아무것도 못찾아도(rc=1) 오류가 아님
 
-    - name: 패스워드 알고리즘 확인
-      mysql_query:
-        query: "SELECT host, user, plugin FROM mysql.user;"
-      register: password_algorithm_direct
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ plugin_check.rc == 0 }}" # grep이 결과를 찾으면(rc=0) 취약
+        vulnerable_users: "{{ plugin_check.stdout_lines | default([]) | unique }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
 
-    - name: 패스워드 알고리즘 결과 출력
-      debug:
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 ('mysql_native_password' 사용 계정 발견: {{ vulnerable_users }}){% else %}양호{% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "MySQL 패스워드 암호화 알고리즘 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "구형 인증 방식인 'mysql_native_password' 플러그인을 사용하는 사용자가 있습니다." if is_vulnerable else "모든 사용자가 최신 인증 플러그인을 사용하고 있습니다.",
+                "vulnerable_users": vulnerable_users
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 자동 조치 건너뛰기 알림
+      ansible.builtin.debug:
+        msg: "이 항목은 사용자 비밀번호 재설정이 필요할 수 있어 자동 조치를 수행하지 않습니다. 수동 조치가 필요합니다."
+      when: is_vulnerable
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록 (수동 조치 필요)
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: ["자동 조치 미수행 (수동 조치 필요)"]
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
         msg: |
-          === 패스워드 알고리즘 확인 결과===
-          {% for user in password_algorithm_direct.query_result[0] %}
-          Host: {{ user.host }} | User: {{ user.user }} | Plugin: {{ user.plugin }}
-          {% endfor %}
-
-    - name: mysql_native_password 사용자 확인 및 경고
-      debug:
-        msg: |
-          다음 사용자들의 패스워드 플러그인을 변경해야 합니다:
-          {% for user in password_algorithm_direct.query_result[0] %}
-          {% if user.plugin == 'mysql_native_password' %}
-          - User: {{ user.user }}, Host: {{ user.host }}
+          총괄 조치 결과: {% if not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          변경 대상: {{ vulnerable_users }}
+          --------------------------------------------------
           {% endif %}
-          {% endfor %}
-          
-          보안 강화를 위해 caching_sha2_password 또는 sha256_password로 변경하세요.
-      when: password_algorithm_direct.query_result[0] | selectattr('plugin', 'equalto', 'mysql_native_password') | list | length > 0
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': false,
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if is_vulnerable else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
