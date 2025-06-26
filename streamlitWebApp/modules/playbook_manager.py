@@ -196,15 +196,15 @@ def generate_task_filename(item_description, filename_mapping):
     item_code = item_description.split(":")[0].strip()
     return filename_mapping.get(item_code, f"{item_code}_security_check.yml")
 
-"""선택된 점검 항목에 따라 플레이북 태스크 생성"""
-def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_categories):  # ✅ 파라미터 추가
+"""선택된 점검 항목에 따라 플레이북 태스크 생성 (확장 버전)"""
+def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_categories):
     playbook_tasks = []
     
     for service, selected in selected_checks.items():
         if service == "Server-Linux" and isinstance(selected, dict):
             if selected["all"]:
                 # 전체 선택 시 모든 항목 포함
-                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():  # ✅ 정상 작동
+                for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
                     for item in items:
                         task_file = generate_task_filename(item, filename_mapping)
                         playbook_tasks.append(task_file)
@@ -216,8 +216,85 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                             if item_selected:
                                 task_file = generate_task_filename(item, filename_mapping)
                                 playbook_tasks.append(task_file)
-        elif selected and service != "Server-Linux":
-            # 다른 서비스들
-            playbook_tasks.append(f"{service.lower()}_security_check.yml")
-    
+        
+        elif service == "PC-Linux" and isinstance(selected, dict):
+            if selected["all"]:
+                # 전체 선택 시 모든 항목 포함
+                for category, items in vulnerability_categories["PC-Linux"]["subcategories"].items():
+                    for item in items:
+                        task_file = generate_task_filename(item, filename_mapping)
+                        playbook_tasks.append(task_file)
+            else:
+                # 개별 선택된 항목만 포함
+                for category, items in selected["categories"].items():
+                    if isinstance(items, dict):
+                        for item, item_selected in items.items():
+                            if item_selected:
+                                task_file = generate_task_filename(item, filename_mapping)
+                                playbook_tasks.append(task_file)
+        
+        elif service == "MySQL" and isinstance(selected, dict):
+            if selected["all"]:
+                # 전체 선택 시 모든 항목 포함
+                for category, items in vulnerability_categories["MySQL"]["subcategories"].items():
+                    for item in items:
+                        task_file = generate_task_filename(item, filename_mapping)
+                        playbook_tasks.append(task_file)
+            else:
+                # 개별 선택된 항목만 포함
+                for category, items in selected["categories"].items():
+                    if isinstance(items, dict):
+                        for item, item_selected in items.items():
+                            if item_selected:
+                                task_file = generate_task_filename(item, filename_mapping)
+                                playbook_tasks.append(task_file)
+        
+        elif service == "Apache" and isinstance(selected, dict):
+            if selected["all"]:
+                # 전체 선택 시 모든 항목 포함
+                for category, items in vulnerability_categories["Apache"]["subcategories"].items():
+                    for item in items:
+                        task_file = generate_task_filename(item, filename_mapping)
+                        playbook_tasks.append(task_file)
+            else:
+                # 개별 선택된 항목만 포함
+                for category, items in selected["categories"].items():
+                    if isinstance(items, dict):
+                        for item, item_selected in items.items():
+                            if item_selected:
+                                task_file = generate_task_filename(item, filename_mapping)
+                                playbook_tasks.append(task_file)
+        
+        elif service == "Nginx" and isinstance(selected, dict):
+            if selected["all"]:
+                # 전체 선택 시 모든 항목 포함
+                for category, items in vulnerability_categories["Nginx"]["subcategories"].items():
+                    for item in items:
+                        task_file = generate_task_filename(item, filename_mapping)
+                        playbook_tasks.append(task_file)
+            else:
+                # 개별 선택된 항목만 포함
+                for category, items in selected["categories"].items():
+                    if isinstance(items, dict):
+                        for item, item_selected in items.items():
+                            if item_selected:
+                                task_file = generate_task_filename(item, filename_mapping)
+                                playbook_tasks.append(task_file)
+        
+        elif service == "PHP" and isinstance(selected, dict):
+            if selected["all"]:
+                # 전체 선택 시 모든 항목 포함
+                for category, items in vulnerability_categories["PHP"]["subcategories"].items():
+                    for item in items:
+                        task_file = generate_task_filename(item, filename_mapping)
+                        playbook_tasks.append(task_file)
+            else:
+                # 개별 선택된 항목만 포함
+                for category, items in selected["categories"].items():
+                    if isinstance(items, dict):
+                        for item, item_selected in items.items():
+                            if item_selected:
+                                task_file = generate_task_filename(item, filename_mapping)
+                                playbook_tasks.append(task_file)
+ 
     return playbook_tasks

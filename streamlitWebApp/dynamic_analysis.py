@@ -7,27 +7,24 @@ def main():
     """포트 스캐닝 메인 페이지"""
     
     # 메인 헤더
-    st.title("🌐 포트 스캐닝 (nmap)")
-    st.markdown("---")
-    
-    # 뒤로가기 버튼
-    col1, col2, col3 = st.columns([1, 2, 1])
+    st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
+
+    col1, col2 = st.columns(2)
+
     with col1:
-        if st.button("⬅️ 정적분석으로 돌아가기"):
+        if st.button("📋 정적 분석 (KISA 가이드)", use_container_width=True, key="btn_back_from_kisa"):
             st.query_params.clear()  # 모든 쿼리 파라미터 제거해서 메인으로
             st.rerun()
-    
-    # 포트 스캐닝 소개
-    st.markdown("""
-    ### 📋 nmap 포트 스캐닝
-    네트워크 서비스 및 포트에 대한 실시간 보안 스캐닝을 수행합니다.
-    """)
-    
-    # 간단한 스캐닝 내용
-    st.header("🔍 Nmap 포트 스캐닝")
-    st.markdown("네트워크 포트 상태, 서비스 탐지, 취약점 스캔을 수행합니다.")
+
+    with col2:
+        if st.button("🕷️ 웹 애플리케이션 테스트", use_container_width=True, key="btn_back_from_webApp"):
+            st.query_params.update({"page": "web_app_test"})
+            st.rerun()
+            
     # 포트 스캐닝 UI
-    st.header("🌐 Nmap 포트 스캐닝")
+    st.header("🌐 동적 분석 - Nmap 포트 스캐닝")
+    st.markdown("네트워크 포트 상태, 서비스 탐지, 취약점 스캔을 수행합니다.")
+    st.markdown("---")
     
     # 대상 설정
     col1, col2 = st.columns(2)

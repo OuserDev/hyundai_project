@@ -142,17 +142,11 @@ def load_analysis_history():
 """확장된 사이드바 렌더링 (개선된 버전)"""
 def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=None):
     
-    # 기존 Control Node 섹션
-    st.sidebar.title("🔧 Control Node")
-    st.sidebar.markdown("**Ansible 플레이북 제어**")
-    
     # 설정 파일 상태 표시 (기존 코드)
     if vulnerability_categories and filename_mapping:
         st.sidebar.success("✅ 설정 파일 로드 완료")
     else:
         st.sidebar.error("❌ 설정 파일 로드 실패")
-    
-    st.sidebar.markdown("---")
     
     # 분석 모듈 섹션
     st.sidebar.markdown("## 🔍 분석 모듈")
