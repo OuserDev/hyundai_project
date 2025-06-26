@@ -1,0 +1,148 @@
+- name: MySQL 최신 버전 사용 여부 진단
+  hosts: target_servers
+  become: yes
+  gather_facts: yes # OS별 패키지 매니저를 구분하기 위해 fact 수집
+
+  # 1. 변수 정의
+  vars:
+    playbook_name: "mysql_latest_version.yml"
+    result_json_path: "/tmp/security_report_mysql_latest_version.json"
+    manual_remediation_guide: "최신 버전의 MySQL로 업그레이드하십시오. [주의] DB 업그레이드는 매우 민감한 작업이므로, 반드시 사전에 데이터를 백업하고 테스트 환경에서 충분히 검증한 후 진행해야 합니다. (예: apt-get upgrade mysql-server 또는 yum update mysql-server)"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 0. 사전 확인 (MySQL 설치 여부)
+    # ----------------------------------------------------------------
+    - name: MySQL 설치 여부 확인 (사전 확인)
+      ansible.builtin.command: which mysqld
+      register: mysql_installed
+      changed_when: false
+      failed_when: false
+
+    - name: MySQL 미설치 시 작업 종료
+      when: mysql_installed.rc != 0
+      block:
+        - name: MySQL 미설치 메시지 출력
+          ansible.builtin.debug:
+            msg: "MySQL이 설치되어 있지 않아 진단을 건너뜁니다."
+        - name: 플레이북 실행 종료
+          ansible.builtin.meta: end_play
+
+    # ----------------------------------------------------------------
+    # 2. 진단
+    # ----------------------------------------------------------------
+    - name: MySQL 업그레이드 가능 여부 진단 (OS별)
+      ansible.builtin.shell: |
+        if [ "{{ ansible_facts['os_family'] }}" = "Debian" ]; then
+            apt-get update >/dev/null 2>&1
+            apt list --upgradable 2>/dev/null | grep -q "^mysql-server"
+        elif [ "{{ ansible_facts['os_family'] }}" = "RedHat" ]; then
+            # yum/dnf check-update는 업데이트가 있으면 rc=100을 반환
+            yum check-update -q mysql-server >/dev/null 2>&1
+            if [ $? -eq 100 ]; then exit 0; else exit 1; fi
+        else
+            exit 2 # 지원하지 않는 OS
+        fi
+      register: upgrade_check
+      changed_when: false
+      failed_when: false
+
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ upgrade_check.rc == 0 }}" # 업그레이드가 있으면(rc=0) 취약
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: 현재 및 사용 가능한 버전 정보 확인 (보고서용)
+      ansible.builtin.shell: |
+        CURRENT_VER=$(mysql --version)
+        AVAILABLE_VER="N/A"
+        if [ "{{ is_vulnerable }}" = "True" ]; then
+            if [ "{{ ansible_facts['os_family'] }}" = "Debian" ]; then
+                AVAILABLE_VER=$(apt list --upgradable 2>/dev/null | grep "^mysql-server" | awk '{print $2}')
+            elif [ "{{ ansible_facts['os_family'] }}" = "RedHat" ]; then
+                AVAILABLE_VER=$(yum info mysql-server 2>/dev/null | grep -E "^Version\s*:" | awk '{print $3}')
+            fi
+        fi
+        echo "{\"current_version\": \"$CURRENT_VER\", \"available_version\": \"$AVAILABLE_VER\"}"
+      register: version_info
+      changed_when: false
+
+    - name: 버전 정보 파싱
+      ansible.builtin.set_fact:
+        version_data: "{{ version_info.stdout | from_json }}"
+
+    # ----------------------------------------------------------------
+    # 3. 진단 결과 보고
+    # ----------------------------------------------------------------
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단 결과: {% if is_vulnerable %}취약 (최신 버전으로 업그레이드 가능합니다){% else %}양호 (최신 버전 사용 중){% endif %}"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "MySQL 최신 버전 사용 여부 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "보안 패치가 적용된 최신 버전의 MySQL을 사용하고 있지 않습니다." if is_vulnerable else "최신 버전의 MySQL을 사용하고 있습니다.",
+                "current_version": version_data.current_version,
+                "available_version": version_data.available_version if is_vulnerable else ""
+              },
+              "remediation_tasks_performed": []
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes
+
+    # ----------------------------------------------------------------
+    # 4. 조치
+    # ----------------------------------------------------------------
+    - name: 자동 조치 건너뛰기 알림
+      ansible.builtin.debug:
+        msg: "이 항목은 DB 업그레이드로 안정성 위험이 높아 자동 조치를 수행하지 않습니다. 수동 조치가 필요합니다."
+      when: is_vulnerable
+
+    # ----------------------------------------------------------------
+    # 5. 조치 결과 보고
+    # ----------------------------------------------------------------
+    - name: 수행된 조치 작업 기록 (수동 조치 필요)
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: ["자동 조치 미수행 (수동 조치 필요)"]
+      when: is_vulnerable
+
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+
+    - name: 최종 JSON 보고서 파일 덮어쓰기
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': false,
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if is_vulnerable else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: yes

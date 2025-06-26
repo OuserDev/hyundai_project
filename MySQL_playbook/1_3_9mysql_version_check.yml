@@ -1,0 +1,36 @@
+---
+- name: MySQL 버전 및 업그레이드 확인
+  hosts: PostWebServers
+  become: yes
+
+  tasks:
+    - name: MySQL 설치 여부 확인
+      command: which mysql
+      register: mysql_installed
+      failed_when: false
+
+    - name: MySQL 미설치 시 종료
+      fail:
+        msg: "MySQL이 설치되어 있지 않습니다. 설치 후 다시 실행해주세요."
+      when: mysql_installed.rc != 0
+
+    - name: 패키지 목록 업데이트
+      apt:
+        update_cache: yes
+
+    - name: MySQL 현재 버전 확인
+      command: mysql --version
+      register: mysql_current
+
+    - name: MySQL 업그레이드 가능 여부 확인
+      shell: apt list --upgradable 2>/dev/null | grep "^mysql"
+      register: mysql_upgradable
+      failed_when: false
+
+    - name: MySQL 정보 출력
+      debug:
+        msg: >
+          ==================== MySQL 정보 ====================
+          현재 버전: {{ mysql_current.stdout }}
+          업그레이드: {{ mysql_upgradable.stdout if mysql_upgradable.stdout else '최신 버전입니다' }}
+          ======================================================

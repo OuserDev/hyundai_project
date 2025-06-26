@@ -1,0 +1,162 @@
+---
+- name: 진단 및 조치 - 이동식 미디어 자동실행 방지
+  hosts: target_servers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 설정 목표 ---
+    autorun_never_setting: true
+
+    # --- dconf 설정 경로 (GNOME) ---
+    dconf_profile_path: "/etc/dconf/profile/gdm"
+    dconf_db_path: "/etc/dconf/db/gdm.d"
+    dconf_keyfile_path: "{{ dconf_db_path }}/01-media-autorun" # 이 항목을 위한 새 키파일
+
+    # --- 보고서 관련 ---
+    playbook_name: "1_2_12_removable_media_autorun.yml"
+    result_json_path: "/tmp/security_report_removable_media_autorun.json"
+    remediation_tasks_performed: []
+    manual_remediation_guide: "gsettings 또는 dconf-editor를 사용하여 org.gnome.desktop.media-handling autorun-never 값을 true로 설정하십시오."
+
+  handlers:
+    - name: dconf 데이터베이스 업데이트
+      ansible.builtin.command: dconf update
+      listen: "update dconf database for media"
+
+  tasks:
+    # 2. 진단
+    # GDM3 패키지 존재 여부로 데스크탑 환경인지 간접적으로 확인
+    - name: GDM3 존재 여부 확인
+      ansible.builtin.package_facts:
+        manager: auto
+      when: ansible_facts['os_family'] == 'Debian'
+
+    # dconf 키 파일이 존재하고, 내용이 올바른지 확인
+    - name: dconf 자동실행 방지 설정 진단
+      ansible.builtin.shell: |
+        if [ ! -f {{ dconf_keyfile_path }} ]; then
+          exit 1
+        fi
+        grep -qE "^\s*autorun-never={{ autorun_never_setting | lower }}" "{{ dconf_keyfile_path }}"
+      register: dconf_check
+      changed_when: false
+      failed_when: false
+      when: "'gdm3' in ansible_facts.packages"
+
+    # 취약 여부 종합 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ (dconf_check.rc != 0) if ('gdm3' in ansible_facts.packages) else false }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+      when: "'packages' in ansible_facts"
+
+    # 3. 진단 결과 보고
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if 'gdm3' not in ansible_facts.packages %}N/A (GNOME 데스크탑 아님){% elif is_vulnerable %}취약 (미디어 자동실행이 방지되지 않음){% else %}양호{% endif %}"
+      when: "'packages' in ansible_facts"
+
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "이동식 미디어 자동실행 방지",
+              "diagnosis_result": "취약" if is_vulnerable else ("N/A" if 'gdm3' not in ansible_facts.packages else "양호"),
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "시스템 전역으로 이동식 미디어 자동실행 방지 정책이 설정되어 있지 않습니다." if is_vulnerable else "양호합니다."
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: "'packages' in ansible_facts"
+
+    # 4. 조치
+    - name: 자동실행 방지 정책 조치 블록
+      block:
+        - name: GDM 프로필 디렉터리 생성
+          ansible.builtin.file:
+            path: "/etc/dconf/profile"
+            state: directory
+            mode: '0755'
+
+        - name: GDM 프로필 설정
+          ansible.builtin.copy:
+            content: |
+              user-db:user
+              system-db:gdm
+              file-db:/usr/share/gdm/greeter-dconf-defaults
+            dest: "{{ dconf_profile_path }}"
+          notify: update dconf database for media
+
+        - name: GDM dconf 디렉터리 생성
+          ansible.builtin.file:
+            path: "{{ dconf_db_path }}"
+            state: directory
+            mode: '0755'
+
+        - name: 자동실행 방지 보안 정책 설정 파일 생성
+          ansible.builtin.blockinfile:
+            path: "{{ dconf_keyfile_path }}"
+            block: |
+              [org/gnome/desktop/media-handling]
+              autorun-never={{ autorun_never_setting | lower }}
+            state: present
+            create: yes
+            mode: '0644'
+          register: dconf_remediation
+          notify: update dconf database for media
+
+      when: is_vulnerable
+
+    - name: dconf 데이터베이스 변경사항 즉시 적용
+      ansible.builtin.meta:
+        flush_handlers
+      when: is_vulnerable
+
+    # 5. 조치 결과 보고
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: "{{ dconf_remediation.changed | default(false) }}"
+        remediation_tasks_performed: "{{ ['dconf 시스템 전역 설정 적용'] if dconf_remediation.changed | default(false) else [] }}"
+      when: is_vulnerable
+    
+    - name: 조치 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: |
+          총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료
+          {% elif not is_vulnerable %}조치 불필요 (양호)
+          {% else %}조치 실패 (수동 조치 필요)
+          --------------------------------------------------
+          [수동 조치 권고]
+          {{ manual_remediation_guide }}
+          --------------------------------------------------
+          {% endif %}
+      when: not ansible_check_mode and 'gdm3' in ansible_facts.packages
+
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패 (수동 조치 필요)'),
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([]),
+              'remediation_guide': manual_remediation_guide if (is_vulnerable and not (remediation_done | default(false))) else ''
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode and 'packages' in ansible_facts

@@ -1,0 +1,103 @@
+---
+- name: PHP 버전 확인 및 최신 버전 체크
+  hosts: PostWebServers
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: PHP 설치 여부 확인
+      command: which php
+      register: php_installed
+      failed_when: false
+      changed_when: false
+
+    - name: PHP 미설치 시 종료
+      fail:
+        msg: "PHP가 설치되어 있지 않습니다. 설치 후 다시 실행해주세요."
+      when: php_installed.rc != 0
+
+    # 현재 설치된 PHP 버전 확인
+    - name: 현재 설치된 PHP 버전 확인
+      command: php --version
+      register: current_php_version
+      failed_when: false
+      changed_when: false
+
+    # 설치 가능한 PHP 버전들 확인
+    - name: Ondrej PHP PPA 추가 (Ubuntu/Debian)
+      apt_repository:
+        repo: "ppa:ondrej/php"
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    # 최신 PHP 버전 확인
+    - name: 최신 PHP 버전 확인
+      shell: >
+        apt-cache search --names-only '^php[0-9]\.[0-9]$' | grep -oP 'php\K[0-9]\.[0-9]' | sort -V | tail -1
+      register: latest_php_version
+      when: ansible_os_family == "Debian"
+      changed_when: false
+
+    # 현재 사용 중인 PHP 모듈들 확인
+    - name: 현재 설치된 PHP 모듈 확인
+      shell: php -m
+      register: php_modules
+      when: php_installed.rc == 0
+      changed_when: false
+
+    - name: 설치된 PHP 모듈들 출력
+      debug:
+        msg: |
+          설치된 PHP 모듈들:
+          {{ php_modules.stdout }}
+      when: php_installed.rc == 0
+
+    # Apache에서 사용 중인 PHP 버전 확인
+    - name: Apache PHP 모듈 상태 확인
+      command: apache2ctl -M
+      register: apache_modules
+      failed_when: false
+      changed_when: false
+
+    - name: Apache에서 활성화된 PHP 모듈 출력
+      debug:
+        msg: >
+          Apache에서 활성화된 PHP 모듈:
+          {{ apache_modules.stdout | regex_findall('php.*_module') }}
+      when: apache_modules.rc == 0
+
+    # PHP-FPM 버전 확인 (설치되어 있는 경우)
+    - name: PHP-FPM 버전 확인
+      shell: >
+        for version in $(ls /etc/php/ 2>/dev/null); do
+          if [ -d "/etc/php/$version/fpm" ]; then
+            echo "PHP-FPM $version: $(systemctl is-active php$version-fpm 2>/dev/null || echo '비활성화')"
+          fi
+        done
+      register: php_fpm_status
+      changed_when: false
+      failed_when: false
+
+    - name: PHP-FPM 상태 출력
+      debug:
+        msg: >
+          PHP-FPM 상태:
+          {{ php_fpm_status.stdout }}
+      when: php_fpm_status.stdout
+
+    # 요약 정보 출력
+    - name: PHP 환경 요약 정보
+      debug:
+        msg: >
+          ==================== PHP 환경 요약 ====================
+          시스템: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          PHP 설치 여부: {{ 'YES' if php_installed.rc == 0 else 'NO' }}
+          {% if php_installed.rc == 0 %}
+          현재 PHP 버전: {{ current_php_version.stdout.split('\n')[0] }}
+          {% endif %}
+          {% if ansible_os_family == "Debian" and latest_php_version.stdout %}
+          최신 사용 가능 버전: PHP {{ latest_php_version.stdout }}
+          {% endif %}
+          ======================================================

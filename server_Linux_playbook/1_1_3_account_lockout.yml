@@ -1,21 +1,18 @@
 ---
-- name: 진단 및 조치 - 계정 잠금 임계값 설정
+- name: "진단 - 계정 잠금 임계값 설정 (수동 조치 안내)"
   hosts: target_servers
   become: yes
   gather_facts: yes
 
   # 1. 변수 정의
   vars:
+    result_json_path: "/tmp/security_report_1.1.3_account_lockout_policy.json"
     lockout_deny_threshold: 5
     lockout_unlock_time: 900
     auth_file_debian: "/etc/pam.d/common-auth"
     account_file_debian: "/etc/pam.d/common-account"
     auth_file_rhel: "/etc/pam.d/system-auth"
     account_file_rhel: "/etc/pam.d/system-auth"
-    package_name_debian: "libpam-modules"
-    package_name_rhel: "pam"
-    result_json_path: "/tmp/security_report_account_lockout.json"
-    remediation_tasks_performed: []
 
   tasks:
     # 2. 진단
@@ -24,18 +21,19 @@
       ansible.builtin.set_fact:
         auth_file: "{{ auth_file_rhel if ansible_facts['os_family'] == 'RedHat' else auth_file_debian }}"
         account_file: "{{ account_file_rhel if ansible_facts['os_family'] == 'RedHat' else account_file_debian }}"
-        package_name: "{{ package_name_rhel if ansible_facts['os_family'] == 'RedHat' else package_name_debian }}"
 
-    # 현재 계정 잠금 정책 설정 상태 진단
+    # 현재 계정 잠금 정책 설정 상태 진단 (grep 명령어 사용)
     - name: 현재 계정 잠금 정책 진단
       ansible.builtin.shell: |
         set -o pipefail
-        grep -q "pam_faillock.so.*preauth" "{{ auth_file }}" && \
-        grep -q "pam_faillock.so.*authfail" "{{ auth_file }}" && \
-        grep -q "account.*required.*pam_faillock.so" "{{ account_file }}"
+        grep -Eq "pam_faillock.so.*preauth" "{{ auth_file }}" && \
+        grep -Eq "pam_faillock.so.*authfail" "{{ auth_file }}" && \
+        grep -Eq "account.*required.*pam_faillock.so" "{{ account_file }}"
         if [ $? -ne 0 ]; then
           exit 1
         fi
+        
+        # deny 값만 추출하여 임계값과 비교
         DENY_VALUE=$(grep 'pam_faillock.so.*authfail' "{{ auth_file }}" | grep -o 'deny=[0-9]*' | cut -d= -f2)
         if [ -z "$DENY_VALUE" ] || [ "$DENY_VALUE" -gt {{ lockout_deny_threshold }} ]; then
           exit 1
@@ -52,138 +50,82 @@
       ansible.builtin.set_fact:
         is_vulnerable: "{{ lockout_policy_check.rc != 0 }}"
 
-    # 3. 진단 결과 보고
+    # 3. 수동 조치 안내문 생성
+    # 취약한 경우에만 수동 조치 가이드라인 변수 생성
+    - name: 수동 조치 안내문 생성
+      ansible.builtin.set_fact:
+        manual_remediation_guide: |
+          [계정 잠금 임계값 설정 조치 방법]
+          1. SSH 또는 콘솔을 통해 서버에 root 권한으로 접속합니다.
+          
+          2. 아래 명령어를 사용하여 PAM 설정 파일을 엽니다.
+          {# RedHat 계열 (CentOS, Rocky 등) #}
+          {% if ansible_facts['os_family'] == 'RedHat' -%}
+          vi {{ auth_file_rhel }}
+          {% else -%}
+          {# Debian 계열 (Ubuntu 등) #}
+          vi {{ auth_file_debian }}
+          vi {{ account_file_debian }}
+          {% endif %}
+
+          3. 파일의 내용에 아래 라인을 각 정책에 맞게 추가하거나 수정합니다.
+          
+          {# RedHat 계열 가이드 #}
+          {% if ansible_facts['os_family'] == 'RedHat' -%}
+          [파일: {{ auth_file_rhel }}]
+          # 'auth sufficient pam_unix.so ...' 라인 위에 아래 내용 추가
+          auth        required      pam_faillock.so preauth silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}
+          
+          # 'auth sufficient pam_unix.so ...' 라인 바로 아래에 아래 내용 추가
+          auth        [default=die] pam_faillock.so authfail silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}
+          
+          # 'account required pam_unix.so' 라인 위에 아래 내용 추가
+          account     required      pam_faillock.so
+          
+          {% else -%}
+          {# Debian 계열 가이드 #}
+          [파일: {{ auth_file_debian }}]
+          # '# here are the per-package modules (the "Primary" block)' 주석 아래, pam_unix.so 라인 위에 추가
+          auth        required      pam_faillock.so preauth silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}
+          auth        [default=die] pam_faillock.so authfail silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}
+          
+          [파일: {{ account_file_debian }}]
+          # '# end of pam-auth-update config' 주석 위, pam_unix.so 라인 위에 추가
+          account     required      pam_faillock.so
+          {% endif %}
+
+          4. 파일을 저장하고 종료합니다.
+      when: is_vulnerable
+
+    # 4. 최종 보고서 생성 및 저장
     # 진단 결과를 콘솔에 간단히 출력
     - name: 진단 결과 콘솔 출력
       ansible.builtin.debug:
-        msg: "진단결과: {% if is_vulnerable %}취약{% else %}양호{% endif %}"
+        msg: "진단결과: {% if is_vulnerable %}취약 (수동 조치 필요){% else %}양호{% endif %}"
 
-    # 초기 JSON 보고서 데이터 생성
-    - name: 초기 JSON 보고서 생성
+    # 취약 시 수동 조치 안내 출력
+    - name: 수동 조치 안내 콘솔 출력
+      ansible.builtin.debug:
+        msg: "{{ manual_remediation_guide }}"
+      when: is_vulnerable
+
+    # 최종 JSON 보고서 데이터 생성
+    - name: 최종 JSON 보고서 데이터 생성
       ansible.builtin.set_fact:
-        current_report_data:
+        report_data:
           playbook_name: "1.1.3_account_lockout_policy.yml"
           task_description: "계정 잠금 임계값 설정"
-          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
-          is_vulnerable: "{{ is_vulnerable }}"
-          timestamp: "{{ ansible_date_time.iso8601 }}"
           hostname: "{{ inventory_hostname }}"
-          remediation_tasks_performed: []
+          diagnosis_timestamp: "{{ ansible_date_time.iso8601 }}"
+          diagnosis_result: "{% if is_vulnerable %}취약{% else %}양호{% endif %}"
+          remediation_type: "{% if is_vulnerable %}수동 조치 필요{% else %}해당 없음{% endif %}"
+          remediation_guide: "{{ manual_remediation_guide | default('양호하여 조치 불필요') }}"
 
-    # 초기 JSON 보고서 파일로 저장
-    - name: 초기 JSON 보고서 파일 저장
-      ansible.builtin.copy:
-        content: "{{ current_report_data | to_nice_json }}"
-        dest: "{{ result_json_path }}"
-        mode: '0644'
-      delegate_to: localhost
-      become: false
-
-    # 4. 조치
-    # 계정 잠금 정책 조치 블록
-    - name: 계정 잠금 정책 조치
-      block:
-        - name: 관련 PAM 패키지 설치
-          ansible.builtin.package:
-            name: "{{ package_name }}"
-            state: present
-          register: package_install
-
-        - name: Debian/Ubuntu | preauth 라인 추가/수정
-          ansible.builtin.lineinfile:
-            path: "{{ auth_file_debian }}"
-            regexp: '^auth\s+required\s+pam_faillock\.so\s+preauth.*'
-            line: "auth        required      pam_faillock.so preauth silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}"
-            insertbefore: '^auth\s+\[success=1\s+default=ignore\].*pam_unix\.so.*'
-            backup: yes
-          register: r1
-          when: ansible_facts['os_family'] == 'Debian'
-
-        - name: Debian/Ubuntu | authfail 라인 추가/수정
-          ansible.builtin.lineinfile:
-            path: "{{ auth_file_debian }}"
-            regexp: '^auth\s+\[default=die\]\s+pam_faillock\.so\s+authfail.*'
-            line: "auth        [default=die] pam_faillock.so authfail silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}"
-            insertafter: '^auth\s+\[success=1\s+default=ignore\].*pam_unix\.so.*'
-            backup: yes
-          register: r2
-          when: ansible_facts['os_family'] == 'Debian'
-
-        - name: Debian/Ubuntu | account 라인 추가/수정
-          ansible.builtin.lineinfile:
-            path: "{{ account_file_debian }}"
-            regexp: '^account\s+required\s+pam_faillock\.so'
-            line: "account     required      pam_faillock.so"
-            insertbefore: '^account\s+required\s+pam_unix\.so.*'
-            backup: yes
-          register: r3
-          when: ansible_facts['os_family'] == 'Debian'
-
-        - name: RedHat/CentOS | preauth 라인 추가/수정
-          ansible.builtin.lineinfile:
-            path: "{{ auth_file_rhel }}"
-            line: "auth        required      pam_faillock.so preauth silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}"
-            insertbefore: '^auth\s+sufficient\s+pam_unix\.so.*'
-            backup: yes
-          register: r4
-          when: ansible_facts['os_family'] == 'RedHat'
-
-        - name: RedHat/CentOS | authfail 라인 추가/수정
-          ansible.builtin.lineinfile:
-            path: "{{ auth_file_rhel }}"
-            line: "auth        [default=die] pam_faillock.so authfail silent audit deny={{ lockout_deny_threshold }} unlock_time={{ lockout_unlock_time }}"
-            insertafter: '^auth\s+sufficient\s+pam_unix\.so.*'
-            backup: yes
-          register: r5
-          when: ansible_facts['os_family'] == 'RedHat'
-
-        - name: RedHat/CentOS | account 라인 추가/수정
-          ansible.builtin.lineinfile:
-            path: "{{ account_file_rhel }}"
-            line: "account     required      pam_faillock.so"
-            insertbefore: '^account\s+required\s+pam_unix\.so.*'
-            backup: yes
-          register: r6
-          when: ansible_facts['os_family'] == 'RedHat'
-      when: is_vulnerable
-
-    # 5. 조치 결과 보고
-    # 수행된 조치 작업 기록
-    - name: 수행된 조치 작업 기록
-      ansible.builtin.set_fact:
-        remediation_done: >-
-          {{ (package_install.changed | default(false)) or
-             (r1.changed | default(false)) or (r2.changed | default(false)) or (r3.changed | default(false)) or
-             (r4.changed | default(false)) or (r5.changed | default(false)) or (r6.changed | default(false)) }}
-        remediation_tasks_performed: >-
-          {{ (['패키지 설치'] if package_install.changed | default(false) else []) +
-             (['PAM 설정 변경'] if (r1.changed | default(false) or r2.changed | default(false) or r3.changed | default(false) or r4.changed | default(false) or r5.changed | default(false) or r6.changed | default(false)) else [])
-          }}
-      when: is_vulnerable
-
-    # 조치 결과를 콘솔에 출력
-    - name: 조치 결과 콘솔 출력
-      ansible.builtin.debug:
-        msg: "총괄 조치 결과: {% if remediation_done | default(false) %}조치 완료{% elif not is_vulnerable %}조치 불필요 (양호){% else %}조치 실패{% endif %}"
-      when: not ansible_check_mode
-
-    # JSON 보고서에 조치 결과 추가
-    - name: JSON 보고서에 조치 결과 추가
-      ansible.builtin.set_fact:
-        current_report_data: "{{ (lookup('file', result_json_path) | from_json) | combine({
-            'remediation_applied': remediation_done | default(false),
-            'remediation_result': '조치 완료' if (remediation_done | default(false)) else ('조치 불필요' if not is_vulnerable else '조치 실패'),
-            'remediation_timestamp': ansible_date_time.iso8601,
-            'remediation_tasks_performed': remediation_tasks_performed | default([])
-          }, recursive=True) }}"
-      when: not ansible_check_mode and is_vulnerable
-
-    # 최종 JSON 보고서 파일 덮어쓰기
+    # 최종 JSON 보고서 파일로 저장 (덮어쓰기)
     - name: 최종 JSON 보고서 파일 저장
       ansible.builtin.copy:
-        content: "{{ current_report_data | to_nice_json }}"
+        content: "{{ report_data | to_nice_json }}"
         dest: "{{ result_json_path }}"
         mode: '0644'
-      when: not ansible_check_mode and is_vulnerable
       delegate_to: localhost
-      become: false
+      become: no

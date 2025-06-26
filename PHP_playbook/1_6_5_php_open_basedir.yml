@@ -1,0 +1,104 @@
+---
+- name: 진단 및 조치 - PHP open_basedir 옵션 설정
+  hosts: PostWebServers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 보고서 관련 ---
+    playbook_name: "1_6_5_php_open_basedir.yml"
+    result_json_path: "/tmp/security_report_php_open_basedir.json"
+    remediation_tasks_performed: []
+  
+  tasks:
+    # 2. 진단
+    # PHP 설치 여부 확인
+    - name: PHP 설치 여부 확인
+      ansible.builtin.command: which php
+      register: php_installed
+      failed_when: false
+      changed_when: false
+
+    # PHP 미설치 시 종료
+    - name: PHP 미설치 시 종료
+      ansible.builtin.fail:
+        msg: "PHP가 설치되어 있지 않습니다. 설치 후 다시 실행해주세요."
+      when: php_installed.rc != 0
+        
+    # PHP 설정파일 조회
+    - name: PHP 설정파일 조회
+      ansible.builtin.shell: "find /etc/php -name php.ini 2>/dev/null || find /etc -name php.ini 2>/dev/null | head -5"
+      register: php_ini_files
+      changed_when: false
+
+    # 각 php.ini에서 open_basedir 값 찾기
+    - name: 각 php.ini에서 open_basedir 값 찾기
+      ansible.builtin.shell: "grep '^\\s*open_basedir\\s*=' {{ item }} || echo 'open_basedir = (설정없음)'"
+      loop: "{{ php_ini_files.stdout_lines }}"
+      register: open_basedir_results
+      changed_when: false
+      when: php_ini_files.stdout_lines | length > 0
+
+    # 취약한 설정 파일 목록 생성
+    - name: 취약한 설정 파일 목록 생성
+      ansible.builtin.set_fact:
+        vulnerable_files: >-
+          {%- set v_files = [] -%}
+          {%- for res in open_basedir_results.results | default([]) -%}
+            {%- if res.stdout is defined -%}
+              {%- set setting = res.stdout.strip() -%}
+              {%- if '(설정없음)' in setting or 
+                     'open_basedir =' == setting or
+                     setting.endswith('=') or
+                     setting | regex_search('open_basedir\\s*=\\s*$') -%}
+                {%- set _ = v_files.append({'file': res.item, 'current_setting': setting}) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ v_files }}
+
+    # 최종 취약 여부 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ vulnerable_files | length > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 3. 진단 결과 보고
+    # 진단 결과를 콘솔에 간단히 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (open_basedir의 값이 없는  설정 파일 {{ vulnerable_files | length }}개 발견){% else %}양호{% endif %}"
+
+    # 초기 JSON 보고서 데이터 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "PHP open_basedir 옵션 설정",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "PHP의 open_basedir 옵션이 null로 설정되어 있어 에러 정보가 노출될 수 있습니다." if is_vulnerable else "PHP의 open_basedir 옵션이 안전하게 설정되어 있습니다.",
+                "vulnerable_files_found": vulnerable_files,
+                "recommendation": "open_basedir값을 설정하여 에러 정보 노출을 방지해야 합니다."
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+  # 핸들러
+  handlers:
+    - name: Reload PHP-FPM
+      ansible.builtin.service:
+        name: "php{{ (item.split('/')[3] if item is match('.*php/\\d+\\.\\d+/.*') else 'fpm') }}-fpm"
+        state: reloaded
+      loop: "{{ php_ini_files.stdout_lines }}"
+      when: item | regex_search('fpm')

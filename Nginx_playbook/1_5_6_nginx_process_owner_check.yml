@@ -1,0 +1,116 @@
+---
+- name: nginx 프로세스 소유자 진단
+  hosts: PostWebServers
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    playbook_name: "1_5_6_nginx_process_owner_check.yml"
+    result_json_path: "/tmp/security_report_directory_listing.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # nginx 설치 확인
+    - name: nginx 설치 여부 확인
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: nginx 설치 상태 출력
+      ansible.builtin.debug:
+        msg: "nginx 설치 상태: {{ '설치됨' if 'nginx' in ansible_facts.packages else '미설치' }}"
+
+    # nginx 서비스 상태 확인
+    - name: nginx 서비스 실행 상태 확인
+      ansible.builtin.systemd:
+        name: nginx
+      register: nginx_status
+      ignore_errors: true
+
+    - name: nginx 서비스 상태 출력
+      ansible.builtin.debug:
+        msg: "nginx 서비스 상태: {{ nginx_status.status.ActiveState | default('확인불가') }}"
+
+    # ps -ef | grep nginx 실행 및 출력 (먼저 실행)
+    - name: nginx 프로세스 확인
+      ansible.builtin.shell: "ps -ef | grep 'nginx'"
+      register: nginx_processes
+      changed_when: false
+      failed_when: false
+
+    - name: nginx 프로세스 목록 출력
+      ansible.builtin.debug:
+        msg: |
+          nginx 프로세스 목록:
+          {% for process in nginx_processes.stdout_lines %}
+          {{ process }}
+          {% endfor %}
+          {% if nginx_processes.stdout_lines | length == 0 %}
+          nginx 프로세스가 실행 중이지 않습니다.
+          {% endif %}
+          
+    - name: Nginx가 root로 실행 중인지 확인
+      ansible.builtin.set_fact:
+        nginx_running_as_root: "{{ nginx_processes.stdout | regex_search('^root') is not none }}"
+      when: nginx_processes.stdout_lines | length > 0
+      
+#조치 시작
+    
+    - name: nginx.conf 설정
+      ansible.builtin.lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^\s*user\s+(root)'
+        line: 'user www-data;'
+        backrefs: yes
+        insertafter: '^worker_processes'
+      when: nginx_running_as_root
+      notify: Reload Nginx
+      
+    - name: 웹 디렉토리 소유권 변경
+      ansible.builtin.file:
+        path: /var/www/html
+        owner: www-data
+        group: www-data
+        recurse: yes
+      when: nginx_running_as_root
+      
+    - name: www-data 계정의 쉘 상태 확인
+      ansible.builtin.command: "getent passwd www-data"
+      register: www_data_passwd
+      changed_when: false
+      ignore_errors: true
+    
+    - name: www-data 계정에 nologin 쉘 설정
+      ansible.builtin.user:
+        name: www-data
+        shell: /usr/sbin/nologin
+      when: 
+        - www_data_passwd.rc == 0  # 계정이 존재하는 경우에만 실행
+        - "'/nologin' not in www_data_passwd.stdout"
+
+      
+    - name: JSON 보고서 생성
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "Nginx user root → www-data 변경 및 www-data 계정 nologin 설정",
+              "timestamp": ansible_date_time.iso8601,
+              "hostname": inventory_hostname,
+              "nginx_user_was_root": "{{ nginx_user_root_line.stdout if nginx_user_root_line is defined and nginx_user_root_line.stdout != '' else 'N/A' }}",
+              "nginx_user_changed_to_www_data": "{{ nginx_user_changed | default(false) }}",
+              "www_data_shell_before": "{{ www_data_passwd.stdout.split(':')[6] if www_data_passwd is defined and www_data_passwd.stdout != '' else 'unknown' }}",
+              "www_data_shell_changed_to_nologin": "{{ www_data_shell_changed | default(false) }}"
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded

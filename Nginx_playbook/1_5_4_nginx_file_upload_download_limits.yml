@@ -1,0 +1,126 @@
+---
+- name: 진단 및 조치 - nginx client_max_body_size 설정 점검
+  hosts: PostWebServers
+  become: yes
+  gather_facts: yes
+
+  # 1. 변수 정의
+  vars:
+    # --- 보고서 관련 ---
+    playbook_name: "1_5_4_nginx_file_upload_download_limits.yml"
+    result_json_path: "/tmp/security_report_nginx_client_max_body_size.json"
+    remediation_tasks_performed: []
+
+  tasks:
+    # 1. /etc/nginx 폴더에서 .conf 파일들 찾기
+    - name: /etc/nginx 폴더에서 .conf 파일 검색
+      ansible.builtin.find:
+        paths:
+          - "/etc/nginx"
+        patterns:
+          - "*.conf"
+        file_type: file
+        recurse: yes
+      register: nginx_conf_files_found
+
+    # 2. 찾은 파일 목록을 변수에 담기
+    - name: nginx conf 파일 목록을 변수에 저장
+      ansible.builtin.set_fact:
+        nginx_conf_file_list: "{{ nginx_conf_files_found.files | map(attribute='path') | list }}"
+
+    # 3. 각 파일에서 client_max_body_size 검색
+    - name: 각 conf 파일에서 client_max_body_size 설정 확인
+      ansible.builtin.shell: "grep -E '^\\s*client_max_body_size\\s+' {{ item }}"
+      loop: "{{ nginx_conf_file_list }}"
+      register: client_max_body_size_check
+      changed_when: false
+      failed_when: false
+      when: nginx_conf_file_list | length > 0
+
+    # 4. client_max_body_size가 없는 파일들 필터링
+    - name: client_max_body_size가 없는 파일 목록 생성
+      ansible.builtin.set_fact:
+        files_without_client_max_body_size: >-
+          {%- set files_without = [] -%}
+          {%- for result in client_max_body_size_check.results -%}
+            {%- if result.rc != 0 -%}
+              {%- set _ = files_without.append(result.item) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ files_without }}
+      when: client_max_body_size_check.results is defined
+
+    # 6. 취약 여부 판단
+    - name: 취약 여부 종합 판단
+      ansible.builtin.set_fact:
+        is_vulnerable: "{{ files_without_client_max_body_size | length > 0 }}"
+        report_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # 7. 진단 결과 콘솔 출력
+    - name: 진단 결과 콘솔 출력
+      ansible.builtin.debug:
+        msg: "진단결과: {% if is_vulnerable %}취약 (client_max_body_size 미설정 파일 {{ files_without_client_max_body_size | length }}개 발견){% else %}양호{% endif %}"
+
+    # 8. 초기 JSON 보고서 생성 및 저장
+    - name: 초기 JSON 보고서 생성 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            {
+              "playbook_name": playbook_name,
+              "task_description": "nginx client_max_body_size 설정 점검",
+              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "is_vulnerable": is_vulnerable,
+              "timestamp": report_timestamp,
+              "hostname": inventory_hostname,
+              "vulnerability_details": {
+                "reason": "nginx 설정 파일에 client_max_body_size가 설정되지 않은 파일들이 발견되었습니다." if is_vulnerable else "모든 nginx 설정 파일에 client_max_body_size가 적절히 설정되어 있습니다.",
+                "total_config_files_found": nginx_conf_file_list | length,
+                "files_with_client_max_body_size": client_max_body_size_check.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list,
+                "files_without_client_max_body_size": files_without_client_max_body_size,
+                "recommendation": "각 설정 파일의 http, server, location 블록에 'client_max_body_size 10M;' 설정을 추가하십시오."
+              }
+            } | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    # 9. 수동 조치 안내 (취약한 경우에만)
+    - name: 필요한 수동 조치 안내
+      ansible.builtin.debug:
+        msg:
+          - "보안 취약점이 발견되었습니다. nginx 설정에서 client_max_body_size가 누락된 파일들을 수동으로 점검해야 합니다."
+          - "조치 필요 파일 목록:"
+          - "{{ files_without_client_max_body_size }}"
+          - "조치 권고:"
+          - "  - 각 nginx 설정 파일을 열어 적절한 블록(http, server, location)에 다음 설정을 추가하십시오:"
+          - "    client_max_body_size 10M;"
+          - "  - 설정 변경 후 'nginx -t' 명령어로 문법을 확인하십시오."
+          - "  - 문제없으면 'systemctl reload nginx' 또는 'nginx -s reload'로 설정을 반영하십시오."
+      when: is_vulnerable
+
+    # 10. 조치 결과 기록 (수동 조치이므로 false)
+    - name: 수행된 조치 작업 기록
+      ansible.builtin.set_fact:
+        remediation_done: false
+        remediation_tasks_performed: "{{ ['수동 조치 필요'] if is_vulnerable else [] }}"
+
+    # 11. 최종 JSON 보고서에 조치 결과 추가 및 저장
+    - name: 최종 JSON 보고서에 조치 결과 추가 및 저장
+      ansible.builtin.copy:
+        content: |
+          {{
+            (lookup('file', result_json_path) | from_json) | combine({
+              'remediation_applied': remediation_done | default(false),
+              'remediation_result': '수동 조치 필요' if is_vulnerable else '조치 불필요',
+              'remediation_timestamp': report_timestamp,
+              'remediation_tasks_performed': remediation_tasks_performed | default([])
+            }, recursive=True) | to_nice_json
+          }}
+        dest: "{{ result_json_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode

@@ -1,0 +1,42 @@
+---
+- name: 사용자 계정 정보 테이블 접근 권한 진단
+  hosts: PostWebServers
+  become: yes
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: MySQL 설치 여부 확인
+      command: which mysql
+      register: mysql_installed
+      failed_when: false
+
+    - name: MySQL 미설치 시 종료
+      fail:
+        msg: "MySQL이 설치되어 있지 않습니다."
+      when: mysql_installed.rc != 0
+
+    - name: MySQL 서비스 상태 확인
+      systemd:
+        name: mysql
+      register: mysql_service_status
+
+    - name: MySQL 서비스가 실행 중인지 확인
+      fail: 
+        msg: "MySQL 서비스가 실행되지 않고 있습니다"
+      when: mysql_service_status.status.ActiveState != "active"
+    
+    - name: mysql.user 테이블 접근권환
+      mysql_query: 
+        query: "select host, user, select_priv from mysql.user"
+      register: query_result
+
+    - name: print query result
+      debug:
+        msg: |
+          {% for user in query_result.query_result[0] %}
+          {% if user.select_priv == 'Y' %}
+          - {{ user.user }}@{{ user.host }} select_priv : {{ user.select_priv }}
+          {% endif %}
+          {% endfor %}

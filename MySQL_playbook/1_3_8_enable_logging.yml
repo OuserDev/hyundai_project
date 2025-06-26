@@ -1,0 +1,104 @@
+---
+- name: MySQL 로그 활성화 진단
+  hosts: PostWebServers
+  become: yes
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: MySQL 설치 여부 확인
+      command: which mysql
+      register: mysql_installed
+      failed_when: false
+
+    - name: MySQL 미설치 시 종료
+      fail:
+        msg: "MySQL이 설치되어 있지 않습니다."
+      when: mysql_installed.rc != 0
+
+    - name: MySQL 서비스 상태 확인
+      systemd:
+        name: mysql
+      register: mysql_service_status
+
+    - name: MySQL 서비스가 실행 중인지 확인
+      fail: 
+        msg: "MySQL 서비스가 실행되지 않고 있습니다"
+      when: mysql_service_status.status.ActiveState != "active"
+
+    - name: MySQL 연결 테스트
+      command: mysql -e "SELECT 1"
+      register: mysql_connection_test
+      failed_when: mysql_connection_test.rc != 0
+
+    - name: General Log 설정 확인
+      mysql_query:
+        query: "show variables like 'general_log%'"
+      register: general_log_result
+
+    - name: Slow Log 설정 확인
+      mysql_query: 
+        query: "show variables like 'slow%'"
+      register: slow_log_result
+
+    - name: 로그 활성화 상태 확인
+      set_fact:
+        general_log_enabled: "{{ (general_log_result.query_result[0] | selectattr('Variable_name', 'equalto', 'general_log') | map(attribute='Value') | first) == 'ON' }}"
+        slow_log_enabled: "{{ (slow_log_result.query_result[0] | selectattr('Variable_name', 'equalto', 'slow_query_log') | map(attribute='Value') | first) == 'ON' }}"
+    
+    - name: 보안 평가 수행
+      set_fact:
+        security_assessment: "{{ 'FAIL' if (not general_log_enabled and not slow_log_enabled) else 'PASS' }}"
+
+    - name: 현재 로그 상태 출력
+      debug:
+        msg: |
+          ================================
+          MySQL 로그 설정 현황
+          ================================
+          General Log: {{ 'ON' if general_log_enabled else 'OFF' }}
+          Slow Query Log: {{ 'ON' if slow_log_enabled else 'OFF' }}
+          평가 결과: {{ '양호' if security_assessment == 'PASS' else '취약' }}
+
+    - name: 활성화 할 로그 선택
+      pause:
+        prompt: |
+          1. general_log
+          2. slow_log
+          3. general_log + slow_log
+      register: select_option
+      when: security_assessment == 'FAIL'
+
+    - name: General Log 활성화
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        insertafter: '^\[mysqld\]'
+      loop:
+        - { regexp: '^#?\s*general_log_file\s*=', line: 'general_log_file = /var/log/mysql/query.log' }
+        - { regexp: '^#?\s*general_log\s*=', line: 'general_log = 1' }
+      when: 
+        - security_assessment == 'FAIL'
+        - select_option is defined
+        - select_option.user_input in ['1', '3']
+
+    - name: Slow Log 활성화
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        insertafter: '^\[mysqld\]'
+      loop:
+        - { regexp: '^#?\s*slow_query_log\s*=', line: 'slow_query_log = 1' }
+        - { regexp: '^#?\s*slow_query_log_file\s*=', line: 'slow_query_log_file = /var/log/mysql/mysql-slow.log' }
+      when: 
+        - security_assessment == 'FAIL'
+        - select_option is defined
+        - select_option.user_input in ['2', '3']
+
+    - name: Restart MySQL service if config changed
+      systemd:
+        name: mysql
+        state: restarted

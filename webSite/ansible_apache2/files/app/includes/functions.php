@@ -80,6 +80,24 @@ function validateUsername($username) {
 }
 
 /////////////////////File Upload Funcs/////////////////////
+// 디스크 용량 검사
+function checkDiskSpace($path, $required_space = 0) {
+    $free_bytes = disk_free_space($path);
+    $total_bytes = disk_total_space($path);
+    
+    if ($free_bytes === false || $total_bytes === false) {
+        throw new Exception('디스크 용량 정보를 가져올 수 없습니다.');
+    }
+    
+    return [
+        'free_bytes' => $free_bytes,
+        'total_bytes' => $total_bytes,
+        'free_mb' => round($free_bytes / 1024 / 1024, 2),
+        'total_mb' => round($total_bytes / 1024 / 1024, 2),
+        'usage_percent' => round((($total_bytes - $free_bytes) / $total_bytes) * 100, 2),
+        'has_space' => $free_bytes > $required_space
+    ];
+}
 function ensureUploadDirectories(){
     $directories = [UPLOAD_PATH, IMAGES_PATH, FILES_PATH];
     
@@ -133,7 +151,23 @@ function validateFileType($file, $type = 'image'){
 }
 
 function uploadImage($file) {
+    $min_free_space = 5 * 1024 * 1024;
+    
     ensureUploadDirectories();
+    
+    $space_info = checkDiskSpace(IMAGES_PATH, $min_free_space + $file['size']);
+    error_log("WARNING: File upload - Disk usage is {$space_info['usage_percent']}%, Free space: {$space_info['free_mb']}MB");
+    
+    if (!$space_info['has_space']) {
+        throw new Exception(
+            "서버 디스크 용량이 부족합니다. " .
+            "여유공간: {$space_info['free_mb']}MB, " .
+            "필요공간: " . round(($min_free_space + $file['size']) / 1024 / 1024, 2) . "MB"
+        );
+    }    
+    if ($space_info['usage_percent'] > 90) {
+        error_log("WARNING: 디스크 사용률이 {$space_info['usage_percent']}%입니다.");
+    }
     
     // 기본 검증
     if ($file['error'] !== UPLOAD_ERR_OK) {
@@ -169,9 +203,19 @@ function uploadImage($file) {
 } 
 function uploadFiles($file) {
     debugFileUpload($file);
-    
+    $min_free_space = 10 * 1024 * 1024;
     try {
         ensureUploadDirectories();
+        $space_info = checkDiskSpace(FILES_PATH, $min_free_space + $file['size']);
+        
+         if ($space_info['usage_percent'] > 90) {
+            error_log("WARNING: 파일 업로드 - 디스크 사용률이 {$space_info['usage_percent']}%입니다.");
+        }
+        
+        // 위험 수준에서는 업로드 차단
+        if ($space_info['usage_percent'] > 95) {
+            throw new Exception("디스크 사용률이 {$space_info['usage_percent']}%로 위험 수준입니다. 업로드를 중단합니다.");
+        }
     } catch (Exception $e) {
         error_log("Directory creation error: " . $e->getMessage());
         throw new Exception('업로드 디렉토리 생성 실패: ' . $e->getMessage());
