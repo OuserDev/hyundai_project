@@ -1,4 +1,0 @@
----
-mysql_root_user: "root"
-mysql_database: "simple_blog"
-mysql_user: "blog_user"
