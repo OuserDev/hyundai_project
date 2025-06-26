@@ -23,7 +23,7 @@ st.set_page_config(
 
 # --- 관리자 계정 정보 (여기서 아이디와 비밀번호를 수정하세요) ---
 ADMIN_USERNAME = "admin" # 관리자
-ADMIN_PASSWORD = "admin"
+ADMIN_PASSWORD = "ensiz8989!!"
 GUEST_USERNAME = "guest" # 일반유저
 GUEST_PASSWORD = "guest"
 
@@ -190,31 +190,25 @@ def render_main_app():
     selected_report = query_params.get("report", None)
     selected_page = query_params.get("page", None)
 
-    # 포트 스캐닝 페이지 라우팅
-    if selected_page == "port_scanning":
+    # 동적 분석 페이지 라우팅
+    if selected_page == "dynamic_analysis":
         try:
             import dynamic_analysis
             dynamic_analysis.main()
             st.stop()
         except ImportError:
             st.error("❌ dynamic_analysis.py 모듈을 찾을 수 없습니다.")
-            if st.button("⬅️ 메인으로 돌아가기"):
-                st.query_params.clear()
-                st.rerun()
-            st.stop()
 
-    # 웹 애플리케이션 테스트 페이지 라우팅
-    if selected_page == "web_app_test":
+    # 스케줄링 페이지 라우팅
+    if selected_page == "scheduling":
         try:
-            import web_app_test
-            web_app_test.main()
+            import scheduling
+            scheduling.main()
             st.stop()
         except ImportError:
-            st.error("❌ web_app_test.py 모듈을 찾을 수 없습니다.")
-            if st.button("⬅️ 메인으로 돌아가기"):
-                st.query_params.clear()
-                st.rerun()
-            st.stop()
+            st.error("❌ scheduling.py 모듈을 찾을 수 없습니다.")
+            # 스케줄링 모듈이 없을 경우 기본 안내
+            st.info("💡 스케줄링 모듈은 추후 구현 예정입니다.")
 
     if selected_report:
         # 분석 리포트 페이지 표시
@@ -222,37 +216,11 @@ def render_main_app():
         st.stop()  # 메인 페이지 렌더링 중단
 
     st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("🌐 포트 스캐닝 (Dynamic Analysis)", use_container_width=True, key="btn_back_from_dynamic"):
-            st.query_params.update({"page": "port_scanning"})
-            st.rerun()
-
-    with col2:
-        if st.button("🕷️ 웹 애플리케이션 테스트", use_container_width=True, key="btn_back_from_webApp"):
-            st.query_params.update({"page": "web_app_test"})
-            st.rerun()
             
     # 취약점 점검 체계 선택
-    st.header("🔍 정적 분석 (Static Analysis)")
-
-    # 시스템 구성 요소 표시
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown("### 📊 Streamlit Web UI")
-        st.info("웹 대시보드 표시")
-
-    with col2:
-        st.markdown("### ⚙️ Control Node")
-        st.success("Ansible 플레이북 동적 생성/실행")
-
-    with col3:
-        st.markdown("### 📄 Python Report Engine")
-        st.warning("파싱 및 분석")
-
+    st.header("📋 정적 분석 (Static Analysis)")
+    st.markdown("""
+    **KISA 한국인터넷진흥원 공식 가이드라인 기반** - 77개 항목의 체계적인 취약점 진단으로 서버 보안을 강화하세요.""")
     st.markdown("---")
 
     # inventory.ini 파일 업로드 섹션
