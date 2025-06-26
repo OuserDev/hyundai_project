@@ -3,8 +3,9 @@
   hosts: PostWebServers
   become: yes
   vars_files:
-    - includes/vars.yml
     - includes/vault.yml
+    - includes/vars.yml
+
 
   handlers:
     - name: restart apache2

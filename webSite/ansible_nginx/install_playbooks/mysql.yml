@@ -76,11 +76,16 @@
     state: present
 
 # MySQL 포트 방화벽 허용
-- name: Allow MySQL port through firewall
-  ufw:
-    rule: allow
-    port: '3306'
-    proto: tcp
+- name: iptables로 포트 열기 (3306)
+  iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item }}"
+    ctstate: NEW,ESTABLISHED
+    jump: ACCEPT
+    comment: "Allow port {{ item }}"
+  loop:
+    - "3306"
 
 - name: Create Database
   mysql_db:

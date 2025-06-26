@@ -60,11 +60,14 @@
     name: apache2
     state: restarted
 
-- name: 방화벽 설정 (HTTP/HTTPS 허용)
-  ufw:
-    rule: allow
-    port: "{{ item }}"
-    proto: tcp
+- name: iptables로 포트 열기 (80, 443)
+  iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item }}"
+    ctstate: NEW,ESTABLISHED
+    jump: ACCEPT
+    comment: "Allow port {{ item }}"
   loop:
     - "80"
     - "443"
