@@ -23,9 +23,9 @@ st.set_page_config(
 
 # --- 관리자 계정 정보 (여기서 아이디와 비밀번호를 수정하세요) ---
 ADMIN_USERNAME = "admin" # 관리자
-ADMIN_PASSWORD = "password"
+ADMIN_PASSWORD = "admin"
 GUEST_USERNAME = "guest" # 일반유저
-GUEST_PASSWORD = "password"
+GUEST_PASSWORD = "guest"
 
 # --- 함수 정의 (모두 전역 범위로 이동) ---
 @st.cache_data
@@ -72,22 +72,25 @@ def render_login_form():
                     st.error("아이디 또는 비밀번호가 일치하지 않습니다.")
                     st.session_state.role = None
 
-# ✨ 로그아웃 버튼을 렌더링하는 함수
-def render_logout_button():
-    """화면 우측 상단에 로그아웃 버튼을 생성"""
-    _, col_logout = st.columns([0.9, 0.1])
-    with col_logout:
-        if st.button("로그아웃", key="logout_button"):
-            st.query_params.clear()
-            for key in st.session_state.keys():
-                del st.session_state[key]
-            st.rerun()
-
 # Guest 유저를 위한 화면을 렌더링하는 함수
 def render_guest_view():
     """Guest 로그인 시 가장 최근의 '정상적인' 분석 기록만 표시"""
-    st.title("최근 분석 기록")
-    st.markdown("---")
+    
+    # 게스트도 사이드바를 볼 수 있도록 추가
+    vulnerability_categories = load_json_config('vulnerability_categories.json')
+    filename_mapping = load_json_config('filename_mapping.json')
+    
+    if vulnerability_categories and filename_mapping:
+        render_sidebar_with_history(vulnerability_categories, filename_mapping)
+    
+    # 🆕 Guest 사용자가 사이드바에서 특정 리포트를 선택한 경우 처리
+    query_params = st.query_params
+    selected_report = query_params.get("report", None)
+    
+    if selected_report:
+        # 선택된 리포트가 있으면 해당 리포트를 표시
+        show_analysis_report(selected_report)
+        return  # 함수 종료하여 아래 코드 실행 방지
 
     latest_valid_report = None
     
@@ -218,7 +221,7 @@ def render_main_app():
         show_analysis_report(selected_report)
         st.stop()  # 메인 페이지 렌더링 중단
 
-    st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템 (관리자 모드)")
+    st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
 
     col1, col2 = st.columns(2)
 
@@ -849,10 +852,8 @@ if "role" not in st.session_state:
 
 # ✨ 역할에 따라 다른 화면을 보여줌
 if st.session_state.role == 'admin':
-    render_logout_button()
     render_main_app()
 elif st.session_state.role == 'guest':
-    render_logout_button()
     render_guest_view()
 else:
     # 로그인되지 않은 상태면 로그인 폼 표시
