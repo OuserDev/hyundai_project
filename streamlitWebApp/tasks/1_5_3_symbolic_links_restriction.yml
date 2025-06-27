@@ -35,13 +35,13 @@
     # ----------------------------------------------------------------
     # 2. 진단
     # ----------------------------------------------------------------
-    - name: 'disable_symlinks off' 설정 여부 진단
+    - name: "'disable_symlinks off' 설정 여부 진단"
       ansible.builtin.shell: "grep -r -q -E '^\\s*disable_symlinks\\s+off\\s*;' {{ nginx_config_dir }}"
       register: disable_symlinks_check
       changed_when: false
       failed_when: false # grep이 못찾아도(rc=1) 오류가 아님
 
-    - name: 'alias' 지시어 사용 여부 진단
+    - name: "'alias' 지시어 사용 여부 진단"
       ansible.builtin.shell: "grep -r -E '^\\s*alias\\s+' {{ nginx_config_dir }} 2>/dev/null | grep -v '#'"
       register: alias_usage_check
       changed_when: false

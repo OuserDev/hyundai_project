@@ -94,7 +94,7 @@
           register: r_user_change
           notify: Reload nginx service
 
-        - name: {{ nginx_user }} 계정의 쉘을 nologin으로 변경
+        - name: "{{ nginx_user }} 계정의 쉘을 nologin으로 변경"
           ansible.builtin.user:
             name: "{{ nginx_user }}"
             shell: /usr/sbin/nologin

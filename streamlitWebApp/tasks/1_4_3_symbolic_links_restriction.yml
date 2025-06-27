@@ -37,13 +37,13 @@
     # ----------------------------------------------------------------
     # 2. 진단
     # ----------------------------------------------------------------
-    - name: 'Options' 지시어에 'Indexes' 포함 여부 진단
+    - name: 'Options 지시어에 Indexes 포함 여부 진단'
       ansible.builtin.shell: "grep -r -i -E '^[[:space:]]*Options[[:space:]]+.*[[:space:]]+Indexes' {{ apache_config_dir }} 2>/dev/null | grep -v '#'"
       register: indexes_check
       changed_when: false
       failed_when: false
 
-    - name: 'Alias' 지시어 사용 여부 진단
+    - name: 'Alias 지시어 사용 여부 진단'
       ansible.builtin.shell: "grep -r -i -E '^[[:space:]]*Alias[[:space:]]+' {{ apache_config_dir }} 2>/dev/null | grep -v '#'"
       register: alias_check
       changed_when: false
@@ -93,7 +93,7 @@
     - name: 조치 블록 (취약한 경우에만 실행)
       when: is_vulnerable
       block:
-        - name: 'Options' 지시어에서 'Indexes' 옵션 제거
+        - name: 'Options 지시어에서 Indexes 옵션 제거'
           ansible.builtin.replace:
             path: "{{ item.split(':')[0] | trim }}"
             regexp: '(\s*Options\s+.*)(Indexes|(\+|-)?Indexes)(\s+.*)'
@@ -104,7 +104,7 @@
           when: vulnerable_indexes_configs | length > 0
           notify: Reload apache service
 
-        - name: 'Alias' 지시어 주석 처리
+        - name: 'Alias 지시어 주석 처리'
           ansible.builtin.replace:
             path: "{{ item.split(':')[0] | trim }}"
             regexp: '^(\s*Alias\s+.*)$'

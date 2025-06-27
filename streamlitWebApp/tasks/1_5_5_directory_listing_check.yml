@@ -38,7 +38,7 @@
     # ----------------------------------------------------------------
     # 2. 진단
     # ----------------------------------------------------------------
-    - name: 'autoindex off'가 설정되지 않은 파일 진단
+    - name: "'autoindex off'가 설정되지 않은 파일 진단"
       ansible.builtin.shell: "grep -L -r -E '^\\s*autoindex\\s+off\\s*;' {{ nginx_config_paths | join(' ') }} 2>/dev/null | grep -E '\\.conf$|/nginx.conf$'"
       register: autoindex_check
       changed_when: false

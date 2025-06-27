@@ -33,7 +33,7 @@
     # ----------------------------------------------------------------
     # 2. 진단
     # ----------------------------------------------------------------
-    - name: 'mysql_native_password' 사용 여부 진단
+    - name: 'mysql_native_password 사용 여부 진단'
       ansible.builtin.shell: "mysql -NBe \"SELECT User, Host FROM mysql.user WHERE plugin = 'mysql_native_password';\" | grep ."
       register: plugin_check
       changed_when: false
