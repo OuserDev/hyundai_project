@@ -296,7 +296,7 @@ def render_main_app():
         # 🆕 분석 모드 선택 추가
         analysis_mode = st.radio(
             "분석 모드 선택:",
-            ["🔄 모든 서버 동일 설정", "⚙️ 서버별 개별 설정"],
+            ["🔄 모든 서버 동일 설정", "⚙️ 서버별 개별 설정 (준비 중)"],
             index=0,
             horizontal=True,
             help="모든 서버에 같은 점검을 할지, 서버마다 다른 점검을 할지 선택하세요"
@@ -470,7 +470,7 @@ def render_main_app():
         else:
             # 🆕 서버별 개별 설정 UI
             st.markdown("### 🎯 서버별 개별 분석 설정")
-            
+            st.error("🚧 서버별 개별 설정 기능은 준비 중입니다. '모든 서버 동일 설정'을 선택해주세요.")
             # 세션 상태에 서버별 선택 정보 저장
             if 'server_specific_checks' not in st.session_state:
                 st.session_state.server_specific_checks = {}

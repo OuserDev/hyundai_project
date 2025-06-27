@@ -105,7 +105,7 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
     # 4. 조치
@@ -152,5 +152,5 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
       when: is_vulnerable or not is_vulnerable # 양호할 때도 최종 보고서는 완성

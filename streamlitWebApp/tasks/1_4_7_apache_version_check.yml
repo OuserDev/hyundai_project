@@ -105,7 +105,7 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes        
+      become: no        
       
     # ----------------------------------------------------------------
     # 4. 조치
@@ -150,5 +150,5 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes      
+      become: no      
         

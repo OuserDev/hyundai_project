@@ -1,3 +1,4 @@
+---
 - name: PHP 파일 접근 경로 제한(open_basedir) 진단 및 조치
   hosts: target_servers
   ignore_errors: true
@@ -77,10 +78,10 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
-    # 4. 조치
+    # 4. 조치 (핸들러 제거, 직접 실행)
     # ----------------------------------------------------------------
     - name: open_basedir에 기본 경로 설정
       ansible.builtin.lineinfile:
@@ -91,11 +92,23 @@
       loop: "{{ vulnerable_files }}"
       register: r_config_change
       when: is_vulnerable
-      notify: Reload PHP-FPM service
 
-    - name: 핸들러 즉시 실행 (조치가 수행된 경우)
-      ansible.builtin.meta: flush_handlers
+    # PHP-FPM 서비스 직접 재시작 (핸들러 대신)
+    - name: 실행 중인 PHP-FPM 서비스 이름 찾기
+      ansible.builtin.shell: "systemctl list-units --type=service --state=active | grep 'php.*-fpm' | awk '{print $1}'"
+      register: php_fpm_services
+      changed_when: false
       when: r_config_change.changed | default(false)
+
+    - name: 발견된 모든 PHP-FPM 서비스 재시작
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: reloaded
+      loop: "{{ php_fpm_services.stdout_lines | default([]) }}"
+      when: 
+        - r_config_change.changed | default(false)
+        - php_fpm_services.stdout_lines | default([]) | length > 0
+      ignore_errors: true
 
     # ----------------------------------------------------------------
     # 5. 조치 결과 보고
@@ -134,21 +147,4 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
-
-  # ----------------------------------------------------------------
-  # 핸들러: 조치 시 서비스 재시작
-  # ----------------------------------------------------------------
-  handlers:
-    - name: Reload PHP-FPM service
-      block:
-        - name: 실행 중인 PHP-FPM 서비스 이름 찾기
-          ansible.builtin.shell: "systemctl list-units --type=service | grep 'php.*-fpm' | awk '{print $1}'"
-          register: php_fpm_services
-          changed_when: false
-
-        - name: 발견된 모든 PHP-FPM 서비스 재시작
-          ansible.builtin.systemd:
-            name: "{{ item }}"
-            state: reloaded
-          loop: "{{ php_fpm_services.stdout_lines }}"
+      become: no

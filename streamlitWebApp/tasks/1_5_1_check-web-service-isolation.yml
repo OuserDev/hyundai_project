@@ -78,7 +78,7 @@
       dest: "{{ result_json_path }}"
       mode: '0644'
     delegate_to: localhost
-    become: yes   # <--- 오류 수정: 값을 'yes'로 명시
+    become: no   # <--- 오류 수정: 값을 'yes'로 명시
 
   # ----------------------------------------------------------------
   # 4. 조치
@@ -127,4 +127,4 @@
       dest: "{{ result_json_path }}"
       mode: '0644'
     delegate_to: localhost
-    become: yes
+    become: no

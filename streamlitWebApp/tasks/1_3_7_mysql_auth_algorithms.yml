@@ -22,7 +22,7 @@
       failed_when: false
 
     - name: MySQL 미설치 시 작업 종료
-      when: mysql_installed.rc != 0
+      when: mysql_installed.rc != 0 or mysql_installed.stdout == ""
       block:
         - name: MySQL 미설치 메시지 출력
           ansible.builtin.debug:
@@ -41,7 +41,7 @@
 
     - name: 취약 여부 종합 판단
       ansible.builtin.set_fact:
-        is_vulnerable: "{{ plugin_check.rc == 0 }}" # grep이 결과를 찾으면(rc=0) 취약
+        is_vulnerable: "{{ (check_result.stdout | default('') | length) > 0 }}"
         vulnerable_users: "{{ plugin_check.stdout_lines | default([]) | unique }}"
         report_timestamp: "{{ ansible_date_time.iso8601 }}"
 
@@ -73,7 +73,7 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
     # 4. 조치
@@ -119,4 +119,4 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no

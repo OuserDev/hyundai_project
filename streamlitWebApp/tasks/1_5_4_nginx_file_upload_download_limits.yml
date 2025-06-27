@@ -74,7 +74,7 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
     # 4. 조치
@@ -131,7 +131,7 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
   # ----------------------------------------------------------------
   # 핸들러: 조치 시 문법 검사 및 서비스 재시작
@@ -147,3 +147,4 @@
           ansible.builtin.systemd:
             name: nginx
             state: reloaded
+            

@@ -1,3 +1,4 @@
+---
 - name: PHP 지원 종료(EOL) 버전 사용 여부 진단
   hosts: target_servers
   ignore_errors: true
@@ -72,7 +73,7 @@
             {
               "playbook_name": playbook_name,
               "task_description": "PHP 지원 종료(EOL) 버전 사용 여부 점검",
-              "diagnosis_result": "취약" if is_vulnerable else "양호",
+              "diagnosis_result": "취약" if is_vulnerable else "양고",
               "is_vulnerable": is_vulnerable,
               "timestamp": report_timestamp,
               "hostname": inventory_hostname,
@@ -87,10 +88,10 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
-    # 4. 조치
+    # 4. 조치 (자동 조치 없음 - 수동 조치만)
     # ----------------------------------------------------------------
     - name: 자동 조치 건너뛰기 알림
       ansible.builtin.debug:
@@ -132,4 +133,4 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
