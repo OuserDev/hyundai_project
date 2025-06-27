@@ -85,7 +85,12 @@
     jump: ACCEPT
     comment: "Allow port {{ item }}"
   loop:
+<<<<<<< HEAD
     - "3306"
+=======
+    - 3306
+    
+>>>>>>> b9684e9b80a371372adb84e681fd348cdfca50bd
 
 - name: Create Database
   mysql_db:

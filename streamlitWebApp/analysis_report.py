@@ -710,27 +710,18 @@ def calculate_execution_time(timestamp):
     
     return None
 
-def download_log_file(timestamp):
-    """로그 파일 다운로드 함수"""
+def get_log_content(timestamp):
+    """로그 파일 내용을 반환하는 함수 (다운로드 버튼 없이)"""
     log_file = f"logs/ansible_execute_log_{timestamp}.log"
     
     if os.path.exists(log_file):
         try:
             with open(log_file, 'r', encoding='utf-8') as f:
-                log_content = f.read()
-            
-            return st.download_button(
-                label="📥 실행 로그 다운로드",
-                data=log_content,
-                file_name=f"ansible_log_{timestamp}.log",
-                mime="text/plain",
-                key=f"download_log_{timestamp}"
-            )
+                return f.read()
         except Exception as e:
             st.error(f"로그 파일 읽기 실패: {str(e)}")
             return None
     else:
-        st.warning("로그 파일을 찾을 수 없습니다.")
         return None
 
 def parse_single_result(data):
@@ -792,16 +783,6 @@ def main(timestamp=None):
     
     # 로그 다운로드 및 메인으로 돌아가기 버튼
     st.markdown("---")
-    col1, col2, col3 = st.columns([1, 1, 2])
-    
-    with col1:
-        download_log_file(timestamp)
-    
-    with col2:
-        # 메인화면 돌아가기 버튼
-        if st.button("⬅️ 메인화면 돌아가기"):
-            st.query_params.clear()
-            st.rerun()
     
     # 데이터 로드
     with st.spinner("📂 분석 결과 데이터 로딩 중..."):
@@ -883,8 +864,6 @@ def main(timestamp=None):
     except Exception as e:
         st.error(f"❌ 데이터 파싱 중 오류 발생: {str(e)}")
         return
-    
-    st.markdown("---")
     
     # 탭 구성 (파일 시스템 분석 제거)
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1402,7 +1381,7 @@ def main(timestamp=None):
         # 다운로드 섹션
         st.subheader("⬇️ 데이터 다운로드")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             # CSV 다운로드
@@ -1420,13 +1399,13 @@ def main(timestamp=None):
             if len(vulnerable_only) > 0:
                 vulnerable_csv = vulnerable_only.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
-                    "⚠️ 실질적 취약점만 CSV 다운로드",
+                    "⚠️ 실질적 취약점 CSV 다운",
                     vulnerable_csv,
                     f"actual_vulnerabilities_{timestamp}.csv",
                     "text/csv"
                 )
             else:
-                st.button("⚠️ 실질적 취약점만 CSV 다운로드", disabled=True, help="실질적 취약점이 없습니다")
+                st.button("⚠️ 실질적 취약점 CSV 다운", disabled=True, help="실질적 취약점이 없습니다")
         
         with col3:
             # JSON 원본 데이터 다운로드
@@ -1438,7 +1417,21 @@ def main(timestamp=None):
                     f"raw_data_{timestamp}.json",
                     "application/json"
                 )
-        
+                
+        with col4:
+            # 로그 파일 다운로드 추가
+            log_content = get_log_content(timestamp)
+            if log_content:
+                st.download_button(
+                    "📥 실행 로그 다운로드",
+                    log_content,
+                    f"ansible_log_{timestamp}.log",
+                    "text/plain",
+                    key=f"download_log_{timestamp}"
+                )
+            else:
+                st.button("📥 실행 로그 다운로드", disabled=True, help="로그 파일을 찾을 수 없습니다")
+                
         # 로그 파일 내용 표시
         st.subheader("📋 실행 로그 전체보기")
         

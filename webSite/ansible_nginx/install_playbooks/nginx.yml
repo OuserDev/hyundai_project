@@ -79,5 +79,10 @@
     jump: ACCEPT
     comment: "Allow port {{ item }}"
   loop:
+<<<<<<< HEAD
     - "80"
     - "443"
+=======
+    - 80
+    - 443
+>>>>>>> b9684e9b80a371372adb84e681fd348cdfca50bd

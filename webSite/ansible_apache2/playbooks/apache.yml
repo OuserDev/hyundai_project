@@ -60,6 +60,10 @@
     name: apache2
     state: restarted
 
+<<<<<<< HEAD
+=======
+# MySQL 포트 방화벽 허용
+>>>>>>> b9684e9b80a371372adb84e681fd348cdfca50bd
 - name: iptables로 포트 열기 (80, 443)
   iptables:
     chain: INPUT
@@ -69,5 +73,11 @@
     jump: ACCEPT
     comment: "Allow port {{ item }}"
   loop:
+<<<<<<< HEAD
     - "80"
     - "443"
+=======
+    - 80
+    - 443
+    
+>>>>>>> b9684e9b80a371372adb84e681fd348cdfca50bd

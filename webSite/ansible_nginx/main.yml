@@ -5,7 +5,11 @@
   vars_files:
     - includes/vault.yml
     - includes/vars.yml
+<<<<<<< HEAD
 
+=======
+    
+>>>>>>> b9684e9b80a371372adb84e681fd348cdfca50bd
 
   handlers:
     - name: restart nginx
