@@ -8,7 +8,7 @@
         sshpass -p 'wrongpassword' ssh -o StrictHostKeyChecking=no \
                -o PreferredAuthentications=password -o PubkeyAuthentication=no \
                student2@192.168.55.5 exit || true
-      loop: "{{ range(1, 11) | list }}"
+      loop: "{{ range(1, 9) | list }}"
       loop_control:
         label: "Try #{{ item }}"
       delay: 5
