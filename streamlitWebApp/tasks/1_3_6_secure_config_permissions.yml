@@ -29,9 +29,9 @@
 
   - name: 취약 여부 종합 판단
     ansible.builtin.set_fact:
-      is_vulnerable: "{{ permission_check.rc == 0 }}" # grep이 결과를 찾으면(rc=0) 취약
-      vulnerable_files: "{{ permission_check.stdout_lines | default([]) | unique }}"
-      report_timestamp: "{{ ansible_date_time.iso8601 }}"
+      is_vulnerable: "{{ (permission_check.stdout | default('') | length) > 0 }}"  # ✅ stdout 길이로 판단
+      vulnerable_files: "{{ permission_check.stdout_lines | default([]) | select('match', '.*') | list }}"  # ✅ 빈 리스트 보장
+      report_timestamp: "{{ ansible_date_time.iso8601 | default('unknown') }}"  # ✅ 기본값 추가
 
   # ----------------------------------------------------------------
   # 3. 진단 결과 보고
