@@ -21,8 +21,6 @@
   tasks:
   - name: 설정 파일 권한이 640보다 넓게 설정되어 있는지 진단
     ansible.builtin.shell: "find {{ mysql_config_paths | join(' ') }} -type f -name '*.cnf' -perm /027 2>/dev/null | grep ."
-    args:
-      warn: no # find 명령어에서 경로가 없을 때 경고를 출력하지 않음
     register: permission_check
     changed_when: false
     failed_when: false # grep이 아무것도 못찾아도(rc=1) 오류가 아님
@@ -61,7 +59,7 @@
       dest: "{{ result_json_path }}"
       mode: '0644'
     delegate_to: localhost
-    become: yes
+    become: no
 
   # ----------------------------------------------------------------
   # 4. 조치
@@ -113,4 +111,4 @@
       dest: "{{ result_json_path }}"
       mode: '0644'
     delegate_to: localhost
-    become: yes
+    become: no

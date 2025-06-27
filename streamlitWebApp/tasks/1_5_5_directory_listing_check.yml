@@ -78,10 +78,10 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
-    # 4. 조치
+    # 4. 조치 (직접 실행 방식)
     # ----------------------------------------------------------------
     - name: 조치 블록 (취약한 경우에만 실행)
       when: is_vulnerable
@@ -91,15 +91,25 @@
             path: "{{ item }}"
             regexp: '^\s*autoindex\s+(on|off)?\s*;'
             line: '    autoindex off;'
-            insertafter: 'server_name\s+.*;' # server_name 지시어 다음에 추가 (일반적 위치)
+            insertafter: 'server_name\s+.*;'
             firstmatch: true
             backup: yes
           loop: "{{ vulnerable_conf_files }}"
           register: r_config_change
-          notify: Reload nginx service
 
-        - name: 핸들러 즉시 실행
-          ansible.builtin.meta: flush_handlers
+        # 핸들러 대신 직접 실행 - 설정이 변경된 경우에만
+        - name: Nginx 설정 파일 문법 검사
+          ansible.builtin.command: nginx -t
+          changed_when: false
+          when: r_config_change.changed
+          ignore_errors: true
+
+        - name: Nginx 서비스 재시작 (설정이 변경된 경우)
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded
+          when: r_config_change.changed
+          ignore_errors: true
 
     # ----------------------------------------------------------------
     # 5. 조치 결과 보고
@@ -137,19 +147,19 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
   # ----------------------------------------------------------------
-  # 핸들러: 조치 시 문법 검사 및 서비스 재시작
+  # 핸들러 섹션 제거 - 더 이상 필요없음
   # ----------------------------------------------------------------
-  handlers:
-    - name: Reload nginx service
-      block:
-        - name: Nginx 설정 파일 문법 검사
-          ansible.builtin.command: nginx -t
-          changed_when: false
-
-        - name: Nginx 서비스 재시작
-          ansible.builtin.systemd:
-            name: nginx
-            state: reloaded
+  # handlers:
+  #   - name: Reload nginx service
+  #     block:
+  #       - name: Nginx 설정 파일 문법 검사
+  #         ansible.builtin.command: nginx -t
+  #         changed_when: false
+  #
+  #       - name: Nginx 서비스 재시작
+  #         ansible.builtin.systemd:
+  #           name: nginx
+  #           state: reloaded

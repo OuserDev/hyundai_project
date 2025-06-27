@@ -1,3 +1,4 @@
+---
 - name: PHP display_errors 옵션 진단 및 조치
   hosts: target_servers
   ignore_errors: true
@@ -24,7 +25,7 @@
     - name: PHP 미설치 시 작업 종료
       when: php_installed.rc != 0
       block:
-        - name: Nginx 미설치 메시지 출력
+        - name: PHP 미설치 메시지 출력
           ansible.builtin.debug:
             msg: "PHP가 설치되어 있지 않아 진단을 건너뜁니다."
         - name: 플레이북 실행 종료
@@ -73,10 +74,10 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
+      become: no
 
     # ----------------------------------------------------------------
-    # 4. 조치
+    # 4. 조치 (핸들러 제거, 직접 실행)
     # ----------------------------------------------------------------
     - name: display_errors=On 설정을 Off로 변경
       ansible.builtin.lineinfile:
@@ -88,11 +89,23 @@
       loop: "{{ vulnerable_files }}"
       register: r_config_change
       when: is_vulnerable
-      notify: Reload PHP-FPM service
 
-    - name: 핸들러 즉시 실행 (조치가 수행된 경우)
-      ansible.builtin.meta: flush_handlers
+    # PHP-FPM 서비스 직접 재시작 (핸들러 대신)
+    - name: 실행 중인 PHP-FPM 서비스 이름 찾기
+      ansible.builtin.shell: "systemctl list-units --type=service --state=active | grep 'php.*-fpm' | awk '{print $1}'"
+      register: php_fpm_services
+      changed_when: false
       when: r_config_change.changed | default(false)
+
+    - name: 발견된 모든 PHP-FPM 서비스 재시작
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: reloaded
+      loop: "{{ php_fpm_services.stdout_lines | default([]) }}"
+      when: 
+        - r_config_change.changed | default(false)
+        - php_fpm_services.stdout_lines | default([]) | length > 0
+      ignore_errors: true
 
     # ----------------------------------------------------------------
     # 5. 조치 결과 보고
@@ -130,21 +143,4 @@
         dest: "{{ result_json_path }}"
         mode: '0644'
       delegate_to: localhost
-      become: yes
-
-  # ----------------------------------------------------------------
-  # 핸들러: 조치 시 서비스 재시작
-  # ----------------------------------------------------------------
-  handlers:
-    - name: Reload PHP-FPM service
-      block:
-        - name: 실행 중인 PHP-FPM 서비스 이름 찾기
-          ansible.builtin.shell: "systemctl list-units --type=service | grep 'php.*-fpm' | awk '{print $1}'"
-          register: php_fpm_services
-          changed_when: false
-
-        - name: 발견된 모든 PHP-FPM 서비스 재시작
-          ansible.builtin.systemd:
-            name: "{{ item }}"
-            state: reloaded
-          loop: "{{ php_fpm_services.stdout_lines }}"
+      become: no
