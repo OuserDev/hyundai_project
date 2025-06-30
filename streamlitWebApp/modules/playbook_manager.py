@@ -8,14 +8,25 @@ import threading
 import queue
 from datetime import datetime
 
-"""생성된 플레이북을 파일로 저장 (import_playbook 방식 유지)"""
-def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
-    # 결과 디렉토리를 미리 생성 (Streamlit에서)
+"""생성된 플레이북을 파일로 저장 (서버별 개별 설정 완전 지원)"""
+def save_generated_playbook(active_servers, playbook_tasks, result_folder_path, 
+                          analysis_mode="unified", server_specific_checks=None,
+                          vulnerability_categories=None, filename_mapping=None):
+    
+    # 🔧 디버깅 정보 출력
+    print(f"\n🔧 save_generated_playbook 호출됨:")
+    print(f"   analysis_mode: {analysis_mode}")
+    print(f"   playbook_tasks 수: {len(playbook_tasks) if playbook_tasks else 0}")
+    print(f"   server_specific_checks 존재: {server_specific_checks is not None}")
+    print(f"   vulnerability_categories 존재: {vulnerability_categories is not None}")
+    print(f"   filename_mapping 존재: {filename_mapping is not None}")
+    
+    # 결과 디렉토리를 미리 생성
     results_dir = os.path.join(result_folder_path, "results")
     os.makedirs(results_dir, exist_ok=True)
     print(f"📁 결과 디렉토리 미리 생성: {results_dir}")
     
-    # 메인 플레이북 구조 생성 (import_playbook 방식)
+    # 메인 플레이북 구조 생성
     playbook_content = []
     
     # 첫 번째 플레이: 초기 설정 (연결성 테스트)
@@ -24,9 +35,9 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
         'hosts': 'target_servers',
         'become': True,
         'gather_facts': True,
-        'any_errors_fatal': False,  # 이 플레이에서 오류가 나도 다음 플레이북들 계속 실행
-        'ignore_errors': True,        # 🆕 추가
-        'ignore_unreachable': True,   # 🆕 추가
+        'any_errors_fatal': False,
+        'ignore_errors': True,
+        'ignore_unreachable': True,
         'vars': {
             'result_directory': f"{result_folder_path}/results",
             'execution_timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -60,20 +71,108 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     }
     playbook_content.append(main_play)
     
-    # import_playbook들 추가 (변수 전달)
-    for task_file in playbook_tasks:
-        # 태스크 코드 추출 (파일명에서)
-        task_code = task_file.replace('.yml', '')
+    # 🔧 분석 모드에 따른 다른 플레이북 생성
+    if analysis_mode == "server_specific" and server_specific_checks and vulnerability_categories and filename_mapping:
+        print(f"🎯 서버별 개별 설정 모드로 플레이북 생성")
+        print(f"🔍 server_specific_checks: {server_specific_checks}")
         
-        import_entry = {
-            'import_playbook': f"../../tasks/{task_file}",
-            'vars': {
-                'result_json_path': f"{os.path.abspath(result_folder_path)}/results/{task_code}_{{{{ inventory_hostname }}}}.json"
-            }
-        }
-        playbook_content.append(import_entry)
+        # 🔧 모든 서버의 태스크를 수집하여 중복 제거된 전체 태스크 목록 생성
+        all_server_tasks = set()
+        server_task_mapping = {}  # 서버별 태스크 매핑
+        
+        for server_name, server_checks in server_specific_checks.items():
+            print(f"📍 서버 '{server_name}' 처리 중... 체크: {server_checks}")
+            server_task_files = []
+            
+            for service, selected in server_checks.items():
+                print(f"   🔧 서비스 '{service}': {selected}")
+                
+                if service in ['Server-Linux', 'PC-Linux', 'MySQL', 'Apache', 'Nginx', 'PHP'] and isinstance(selected, dict):
+                    if selected.get("all", False):
+                        print(f"     → {service} 전체 선택됨")
+                        # 전체 선택 시 모든 항목 포함
+                        for category, items in vulnerability_categories[service]["subcategories"].items():
+                            for item in items:
+                                item_code = item.split(":")[0].strip()
+                                task_file = filename_mapping.get(item_code, f"{item_code}_security_check.yml")
+                                server_task_files.append(task_file)
+                                all_server_tasks.add(task_file)
+                                print(f"       + {task_file} 추가됨")
+                    else:
+                        # 개별 선택된 항목만 포함
+                        categories = selected.get("categories", {})
+                        print(f"     → {service} 개별 선택: {categories}")
+                        for category, items in categories.items():
+                            if isinstance(items, dict):
+                                for item, item_selected in items.items():
+                                    if item_selected:
+                                        item_code = item.split(":")[0].strip()
+                                        task_file = filename_mapping.get(item_code, f"{item_code}_security_check.yml")
+                                        server_task_files.append(task_file)
+                                        all_server_tasks.add(task_file)
+                                        print(f"       + {task_file} 추가됨 ({item})")
+            
+            server_task_mapping[server_name] = set(server_task_files)
+            print(f"   ✅ 서버 '{server_name}'에 {len(server_task_files)}개 태스크 할당")
+        
+        print(f"🎯 전체 고유 태스크 수: {len(all_server_tasks)}")
+        
+        # 🔧 중복 제거된 전체 태스크에 대해 조건부 import_playbook 생성
+        for task_file in sorted(all_server_tasks):
+            task_code = task_file.replace('.yml', '')
+            
+            # 이 태스크를 실행해야 하는 서버들 찾기
+            target_servers_for_task = [
+                server for server, tasks in server_task_mapping.items() 
+                if task_file in tasks
+            ]
+            
+            if target_servers_for_task:
+                # when 조건 생성 (해당 서버들에서만 실행)
+                if len(target_servers_for_task) == 1:
+                    when_condition = f"inventory_hostname == '{target_servers_for_task[0]}'"
+                else:
+                    # 여러 서버의 경우 리스트로 처리
+                    server_list = str(target_servers_for_task).replace("'", '"')
+                    when_condition = f"inventory_hostname in {server_list}"
+                
+                # 조건부 import_playbook 추가
+                conditional_import = {
+                    'import_playbook': f"../../tasks/{task_file}",
+                    'when': when_condition,
+                    'vars': {
+                        'result_json_path': f"{os.path.abspath(result_folder_path)}/results/{task_code}_{{{{ inventory_hostname }}}}.json"
+                    }
+                }
+                playbook_content.append(conditional_import)
+                
+                print(f"   🎯 태스크 {task_file}: {target_servers_for_task}에서 실행")
     
-    # 파일명 생성 (result_folder_path에서 타임스탬프 추출)
+    elif analysis_mode == "unified" and playbook_tasks:
+        print(f"🔄 통일 설정 모드로 플레이북 생성")
+        
+        # 기존 방식: 모든 서버에 동일한 태스크 적용
+        for task_file in playbook_tasks:
+            task_code = task_file.replace('.yml', '')
+            
+            import_entry = {
+                'import_playbook': f"../../tasks/{task_file}",
+                'vars': {
+                    'result_json_path': f"{os.path.abspath(result_folder_path)}/results/{task_code}_{{{{ inventory_hostname }}}}.json"
+                }
+            }
+            playbook_content.append(import_entry)
+            print(f"   📋 통일 태스크 추가: {task_file}")
+    
+    else:
+        print(f"❌ 조건이 맞지 않아 보안 태스크가 추가되지 않음!")
+        print(f"   analysis_mode: {analysis_mode}")
+        print(f"   server_specific_checks 존재: {bool(server_specific_checks)}")
+        print(f"   playbook_tasks 수: {len(playbook_tasks) if playbook_tasks else 0}")
+        print(f"   vulnerability_categories 존재: {bool(vulnerability_categories)}")
+        print(f"   filename_mapping 존재: {bool(filename_mapping)}")
+    
+    # 파일명 생성
     folder_name = os.path.basename(result_folder_path)
     timestamp = folder_name.replace("playbook_result_", "")
     
@@ -86,13 +185,17 @@ def save_generated_playbook(active_servers, playbook_tasks, result_folder_path):
     
     # 백엔드 콘솔에 생성된 플레이북 내용 출력
     print(f"\n{'='*80}")
-    print(f"📝 생성된 플레이북 내용 (import_playbook 방식):")
+    print(f"📝 생성된 플레이북 내용 ({analysis_mode} 모드):")
     print(f"{'='*80}")
     with open(filepath, 'r', encoding='utf-8') as f:
-        print(f.read())
+        content = f.read()
+        print(content)
+        
+        # 🔧 추가 진단: import_playbook 개수 확인
+        import_count = content.count('import_playbook:')
+        print(f"\n🔍 import_playbook 항목 수: {import_count}")
     print(f"{'='*80}\n")
     
-    # 타임스탬프도 함께 반환
     return filepath, filename, timestamp
 
 """백엔드에서 Ansible 플레이북 실행 (ansible.cfg 의존)"""
@@ -262,25 +365,38 @@ def generate_task_filename(item_description, filename_mapping):
     item_code = item_description.split(":")[0].strip()
     return filename_mapping.get(item_code, f"{item_code}_security_check.yml")
 
-"""선택된 점검 항목에 따라 플레이북 태스크 생성 (확장 버전)"""
-def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_categories, analysis_mode="unified", active_servers=None, server_specific_checks=None):
+"""🔧 generate_playbook_tasks 함수 수정 (중복 제거 최적화)"""
+def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_categories, 
+                           analysis_mode="unified", active_servers=None, server_specific_checks=None):
+    """선택된 점검 항목에 따라 플레이북 태스크 생성 (서버별 개별 설정 지원)"""
     playbook_tasks = []
     
+    print(f"\n🔧 generate_playbook_tasks 실행")
+    print(f"   analysis_mode: {analysis_mode}")
+    print(f"   active_servers: {active_servers}")
+    print(f"   server_specific_checks available: {server_specific_checks is not None}")
+    
     if analysis_mode == "server_specific" and server_specific_checks:
-        # 🔧 개선: 실제 서버별 선택 정보 사용
-        all_tasks = set()  # 중복 제거
+        print(f"🎯 서버별 개별 설정 모드로 실행")
+        
+        # 🔧 개선: 모든 서버의 모든 태스크를 수집 (중복 제거)
+        all_tasks = set()
         
         for server_name, server_checks in server_specific_checks.items():
-            server_tasks = []
+            print(f"\n📍 서버 '{server_name}' 처리 중...")
             
             for service, selected in server_checks.items():
+                print(f"   서비스 '{service}': {selected}")
+                
                 if service in vulnerability_categories and isinstance(selected, dict):
                     if selected.get("all", False):
+                        print(f"     → {service} 전체 선택됨")
                         # 전체 선택 시 모든 항목 포함
                         for category, items in vulnerability_categories[service]["subcategories"].items():
                             for item in items:
                                 task_file = generate_task_filename(item, filename_mapping)
-                                server_tasks.append(task_file)
+                                all_tasks.add(task_file)
+                                print(f"       + {task_file}")
                     else:
                         # 개별 선택된 항목만 포함
                         categories = selected.get("categories", {})
@@ -289,25 +405,28 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                                 for item, item_selected in items.items():
                                     if item_selected:
                                         task_file = generate_task_filename(item, filename_mapping)
-                                        server_tasks.append(task_file)
-            
-            # 모든 태스크를 전체 목록에 추가 (중복 제거)
-            all_tasks.update(server_tasks)
+                                        all_tasks.add(task_file)
+                                        print(f"       + {task_file}")
         
-        return list(all_tasks)
+        final_tasks = list(all_tasks)
+        print(f"\n✅ 최종 생성된 고유 태스크 수: {len(final_tasks)}")
+        print(f"태스크 목록: {final_tasks[:5]}{'...' if len(final_tasks) > 5 else ''}")
+        
+        return final_tasks
     
     else:
+        print(f"🔄 통일 설정 모드로 실행")
+        
+        # 🔧 기존 통일 설정 방식 (변경 없음)
         for service, selected in selected_checks.items():
             if service == "Server-Linux" and isinstance(selected, dict):
-                if selected["all"]:
-                    # 전체 선택 시 모든 항목 포함
+                if selected.get("all", False):
                     for category, items in vulnerability_categories["Server-Linux"]["subcategories"].items():
                         for item in items:
                             task_file = generate_task_filename(item, filename_mapping)
                             playbook_tasks.append(task_file)
                 else:
-                    # 개별 선택된 항목만 포함
-                    for category, items in selected["categories"].items():
+                    for category, items in selected.get("categories", {}).items():
                         if isinstance(items, dict):
                             for item, item_selected in items.items():
                                 if item_selected:
@@ -315,15 +434,13 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                                     playbook_tasks.append(task_file)
             
             elif service == "PC-Linux" and isinstance(selected, dict):
-                if selected["all"]:
-                    # 전체 선택 시 모든 항목 포함
+                if selected.get("all", False):
                     for category, items in vulnerability_categories["PC-Linux"]["subcategories"].items():
                         for item in items:
                             task_file = generate_task_filename(item, filename_mapping)
                             playbook_tasks.append(task_file)
                 else:
-                    # 개별 선택된 항목만 포함
-                    for category, items in selected["categories"].items():
+                    for category, items in selected.get("categories", {}).items():
                         if isinstance(items, dict):
                             for item, item_selected in items.items():
                                 if item_selected:
@@ -331,15 +448,13 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                                     playbook_tasks.append(task_file)
             
             elif service == "MySQL" and isinstance(selected, dict):
-                if selected["all"]:
-                    # 전체 선택 시 모든 항목 포함
+                if selected.get("all", False):
                     for category, items in vulnerability_categories["MySQL"]["subcategories"].items():
                         for item in items:
                             task_file = generate_task_filename(item, filename_mapping)
                             playbook_tasks.append(task_file)
                 else:
-                    # 개별 선택된 항목만 포함
-                    for category, items in selected["categories"].items():
+                    for category, items in selected.get("categories", {}).items():
                         if isinstance(items, dict):
                             for item, item_selected in items.items():
                                 if item_selected:
@@ -347,15 +462,13 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                                     playbook_tasks.append(task_file)
             
             elif service == "Apache" and isinstance(selected, dict):
-                if selected["all"]:
-                    # 전체 선택 시 모든 항목 포함
+                if selected.get("all", False):
                     for category, items in vulnerability_categories["Apache"]["subcategories"].items():
                         for item in items:
                             task_file = generate_task_filename(item, filename_mapping)
                             playbook_tasks.append(task_file)
                 else:
-                    # 개별 선택된 항목만 포함
-                    for category, items in selected["categories"].items():
+                    for category, items in selected.get("categories", {}).items():
                         if isinstance(items, dict):
                             for item, item_selected in items.items():
                                 if item_selected:
@@ -363,15 +476,13 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                                     playbook_tasks.append(task_file)
             
             elif service == "Nginx" and isinstance(selected, dict):
-                if selected["all"]:
-                    # 전체 선택 시 모든 항목 포함
+                if selected.get("all", False):
                     for category, items in vulnerability_categories["Nginx"]["subcategories"].items():
                         for item in items:
                             task_file = generate_task_filename(item, filename_mapping)
                             playbook_tasks.append(task_file)
                 else:
-                    # 개별 선택된 항목만 포함
-                    for category, items in selected["categories"].items():
+                    for category, items in selected.get("categories", {}).items():
                         if isinstance(items, dict):
                             for item, item_selected in items.items():
                                 if item_selected:
@@ -379,19 +490,18 @@ def generate_playbook_tasks(selected_checks, filename_mapping, vulnerability_cat
                                     playbook_tasks.append(task_file)
             
             elif service == "PHP" and isinstance(selected, dict):
-                if selected["all"]:
-                    # 전체 선택 시 모든 항목 포함
+                if selected.get("all", False):
                     for category, items in vulnerability_categories["PHP"]["subcategories"].items():
                         for item in items:
                             task_file = generate_task_filename(item, filename_mapping)
                             playbook_tasks.append(task_file)
                 else:
-                    # 개별 선택된 항목만 포함
-                    for category, items in selected["categories"].items():
+                    for category, items in selected.get("categories", {}).items():
                         if isinstance(items, dict):
                             for item, item_selected in items.items():
                                 if item_selected:
                                     task_file = generate_task_filename(item, filename_mapping)
                                     playbook_tasks.append(task_file)
-            pass 
-    return playbook_tasks
+        
+        print(f"✅ 통일 모드에서 {len(playbook_tasks)}개 태스크 생성됨")
+        return playbook_tasks

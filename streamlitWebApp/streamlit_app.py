@@ -20,6 +20,37 @@ st.set_page_config(
     page_icon="🔒",
     layout="wide"
 )
+st.markdown("""
+<style>
+    .main-title {
+        text-align: center;
+        font-size: 4rem;
+        font-weight: bold;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #2E86C1 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        transform: skew(-5deg);
+        margin-bottom: 0.5rem;
+    }
+    .sub-title {
+        text-align: center;
+        color: #566573;
+        margin-bottom: 2rem;
+        font-weight: 300;
+    }
+    .divider {
+        border: none;
+        height: 3px;
+        background: linear-gradient(90deg, #2E86C1, #85C1E9, #2E86C1);
+        margin: 2rem 0;
+        border-radius: 2px;
+    }
+</style>
+""", unsafe_allow_html=True)
+st.markdown('<h1 class="main-title">Askable</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title" style="font-size: 2rem">Ansible 기반 취약점 자동 점검 및 공격 탐지 시스템</p>', unsafe_allow_html=True)
+st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
 # --- 관리자 계정 정보 (여기서 아이디와 비밀번호를 수정하세요) ---
 ADMIN_USERNAME = "admin" # 관리자
@@ -43,14 +74,12 @@ def load_json_config(filename):
 
 # --- 로그인 UI를 렌더링하는 함수 ---
 def render_login_form():
-    st.markdown("<h1 style='text-align: center;'>Askable: 취약점 점검 시스템</h1>", unsafe_allow_html=True)
-    st.markdown("---")
     
     col1, col2, col3 = st.columns([1.5, 2, 1.5])
     
     with col2:
         with st.form("login_form"):
-            st.markdown("### 🔒 로그인")
+            st.markdown("### 🔒 Login")
             username = st.text_input("아이디 (Username)", placeholder="아이디를 입력하세요")
             password = st.text_input("비밀번호 (Password)", type="password", placeholder="비밀번호를 입력하세요")
             submitted = st.form_submit_button("로그인", use_container_width=True, type="primary")
@@ -58,13 +87,13 @@ def render_login_form():
             if submitted:
                 if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
                     st.query_params.clear()
-                    st.success("Admin으로 로그인되었습니다! 잠시 후 메인 화면으로 이동합니다...")
+                    st.success("Admin으로 로그인되었습니다! 잠시 후 메인 화면으로 이동합니다.")
                     st.session_state.role = 'admin'
                     time.sleep(1)
                     st.rerun()
                 elif username == GUEST_USERNAME and password == GUEST_PASSWORD:
                     st.query_params.clear()
-                    st.success("Guest로 로그인되었습니다! 잠시 후 분석 기록 화면으로 이동합니다...")
+                    st.success("Guest로 로그인되었습니다! 잠시 후 분석 기록 화면으로 이동합니다.")
                     st.session_state.role = 'guest'
                     time.sleep(1)
                     st.rerun()
@@ -126,6 +155,45 @@ def render_guest_view():
         with col2:
             st.info("표시할 수 있는 정상적인 분석 기록이 없습니다. 관리자에게 문의 바랍니다.")
 
+def reset_playbook_session(reason="사용자 요청"):
+    """플레이북 실행 관련 세션 상태를 초기화하는 함수"""
+    print(f"\n{'='*60}")
+    print(f"🔄 세션 상태 초기화 - {reason}")
+    print(f"{'='*60}")
+    
+    # 기존 세션 상태 백업 (디버깅용)
+    old_state = {
+        'playbook_generated': st.session_state.get('playbook_generated', False),
+        'playbook_path': st.session_state.get('playbook_path', ""),
+        'result_folder_path': st.session_state.get('result_folder_path', ""),
+    }
+    
+    if any(old_state.values()):
+        print(f"📊 초기화 전 상태: {old_state}")
+    
+    # 세션 상태 초기화
+    session_keys_to_reset = [
+        'playbook_generated',
+        'playbook_path', 
+        'inventory_path',
+        'playbook_tasks',
+        'selected_checks',
+        'result_folder_path',
+        'timestamp'
+    ]
+    
+    for key in session_keys_to_reset:
+        if key in st.session_state:
+            if key == 'playbook_tasks' or key == 'selected_checks':
+                st.session_state[key] = {}
+            elif key == 'playbook_generated':
+                st.session_state[key] = False
+            else:
+                st.session_state[key] = ""
+    
+    print(f"✅ 세션 초기화 완료")
+    print(f"{'='*60}\n")
+    
 def calculate_selected_items(selected_checks, vulnerability_categories):
     """
     UI에서 실제로 체크된 항목의 개수만 정확히 계산하는 함수.
@@ -190,7 +258,7 @@ def render_main_app():
     selected_report = query_params.get("report", None)
     selected_page = query_params.get("page", None)
 
-    # 동적 분석 페이지 라우팅
+    # 공격 탐지 페이지 라우팅
     if selected_page == "dynamic_analysis":
         try:
             import dynamic_analysis
@@ -214,21 +282,19 @@ def render_main_app():
         # 분석 리포트 페이지 표시
         show_analysis_report(selected_report)
         st.stop()  # 메인 페이지 렌더링 중단
-
-    st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
             
     # 취약점 점검 체계 선택
-    st.header("📋 정적 분석 (Static Analysis)")
+    st.header("📋 취약점 점검 (Static Analysis)")
     st.markdown("""
-    **KISA 한국인터넷진흥원 공식 가이드라인 기반** - 77개 항목의 체계적인 취약점 진단으로 서버 보안을 강화하세요.""")
+    **KISA 한국인터넷진흥원 공식 취약점 점검 가이드라인 기반** - 77개 항목의 체계적인 취약점 진단으로 서버 보안을 강화하세요.""")
     st.markdown("---")
 
     # inventory.ini 파일 업로드 섹션
-    st.subheader("🖥️ Managed Nodes 구성 (Inventory 파일 업로드)")
+    st.subheader("🖥️ Managed Nodes 구성")
 
     # 파일 업로드 위젯
     uploaded_file = st.file_uploader(
-        "Ansible inventory.ini 파일을 업로드하세요",
+        "📂 inventory.ini 파일을 업로드해주세요. (ansible_host ansible_user, ansible_become_pass 및 대상 Managed Node로의 SSH 공개키 사전 발급 필수)",
         type=['ini', 'txt'],
         help="inventory.ini 파일을 업로드하면 자동으로 서버 목록을 생성합니다"
     )
@@ -244,7 +310,6 @@ def render_main_app():
             servers_info = {}
     else:
         servers_info = {}
-        st.warning("📂 inventory.ini 파일을 업로드해주세요.")
 
     # 서버 선택 섹션
     st.subheader("🎯 대상 서버 선택")
@@ -289,14 +354,14 @@ def render_main_app():
 
     st.markdown("---")
 
-    # 정적 분석 세부 설정 - 서버 선택 시에만 표시
+    # 취약점 점검 세부 설정 - 서버 선택 시에만 표시
     if active_servers and vulnerability_categories:
-        st.subheader("📝 정적 분석 - 취약점 점검 항목 선택")
+        st.subheader("📝 취약점 점검 항목 선택")
         
         # 🆕 분석 모드 선택 추가
         analysis_mode = st.radio(
             "분석 모드 선택:",
-            ["🔄 모든 서버 동일 설정", "⚙️ 서버별 개별 설정 (준비 중)"],
+            ["🔄 모든 서버 동일 설정", "⚙️ 서버별 개별 설정"],
             index=0,
             horizontal=True,
             help="모든 서버에 같은 점검을 할지, 서버마다 다른 점검을 할지 선택하세요"
@@ -470,7 +535,6 @@ def render_main_app():
         else:
             # 🆕 서버별 개별 설정 UI
             st.markdown("### 🎯 서버별 개별 분석 설정")
-            st.error("🚧 서버별 개별 설정 기능은 준비 중입니다. '모든 서버 동일 설정'을 선택해주세요.")
             # 세션 상태에 서버별 선택 정보 저장
             if 'server_specific_checks' not in st.session_state:
                 st.session_state.server_specific_checks = {}
@@ -491,6 +555,22 @@ def render_main_app():
                         server_name, vulnerability_categories, i
                     )
                     st.session_state.server_specific_checks[server_name] = server_checks
+                    
+                    # 🔧 현재 선택 상태 표시
+                    selected_count = 0
+                    for service, selected in server_checks.items():
+                        if isinstance(selected, dict) and selected.get("all", False):
+                            selected_count += vulnerability_categories.get(service, {}).get("count", 0)
+                        elif isinstance(selected, dict):
+                            categories = selected.get("categories", {})
+                            for items in categories.values():
+                                if isinstance(items, dict):
+                                    selected_count += sum(1 for item_selected in items.values() if item_selected)
+                    
+                    if selected_count > 0:
+                        st.success(f"✅ 현재 {selected_count}개 점검 항목 선택됨")
+                    else:
+                        st.warning("⚠️ 아직 선택된 점검 항목이 없습니다")
             
             # 전체 선택된 항목 통합
             selected_checks = integrate_server_specific_checks(
@@ -514,8 +594,10 @@ def render_main_app():
                     st.warning("⚠️ 점검 항목을 선택해주세요")
         
             with col_summary3:
-                estimated_time = len(active_servers) * (total_selected // 10) if total_selected > 0 else 0
-                st.info(f"⏱️ 예상 소요시간: {estimated_time}분")              
+                estimated_seconds = len(active_servers) * total_selected * 8
+                rounded_seconds = math.ceil(estimated_seconds / 10) * 10  # 10초 단위 반올림
+                estimated_minutes = math.ceil(rounded_seconds / 60)  # 분 단위로 반올림
+                st.info(f"⏱️ 예상 소요시간: {estimated_minutes}분")              
         else:
             # 🆕 서버별 요약 표시
             total_selected, server_breakdown = count_server_specific_checks(
@@ -535,12 +617,14 @@ def render_main_app():
             with col_summary3:
                 if total_selected > 0:
                     st.success(f"✅ {total_selected}개 점검 준비 완료")
-                    estimated_time = len(active_servers) * (total_selected // 10) if total_selected > 0 else 0
-                    st.info(f"⏱️ 예상 소요시간: {estimated_time}분")
+                    estimated_seconds = len(active_servers) * total_selected * 8
+                    rounded_seconds = math.ceil(estimated_seconds / 10) * 10  # 10초 단위 반올림
+                    estimated_minutes = math.ceil(rounded_seconds / 60)  # 분 단위로 반올림
+                    st.info(f"⏱️ 예상 소요시간: {estimated_minutes}분")         
                 else:
                     st.warning("⚠️ 점검 항목을 선택해주세요")
-            
-    # 정적 분석은 활성화되었지만 서버가 선택되지 않은 경우
+
+    # 취약점 점검은 활성화되었지만 서버가 선택되지 않은 경우
     elif not active_servers:
         st.info("📋 대상 서버를 선택하면 해당 서버의 취약점 점검 항목을 설정할 수 있습니다.")
 
@@ -567,6 +651,7 @@ def render_main_app():
         # 취약점 점검 시작 버튼
         if not st.session_state.playbook_generated:
             if st.button("🔍 취약점 점검 시작", type="primary", use_container_width=True):
+                reset_playbook_session("새로운 취약점 점검 시작")
                 # 플레이북 생성 및 저장
                 with st.spinner("Ansible 플레이북 동적 생성 중..."):
                     # 타임스탬프로 결과 폴더 생성
@@ -575,39 +660,60 @@ def render_main_app():
                     result_folder_path = os.path.join("playbooks", result_folder_name)
                     os.makedirs(result_folder_path, exist_ok=True)
                     os.makedirs(os.path.join(result_folder_path, "results"), exist_ok=True)  # 결과 하위 폴더도 미리 생성
-                    
-                    # 선택된 점검 항목에 따른 플레이북 태스크 생성
-                    if analysis_mode == "⚙️ 서버별 개별 설정":
+
+                    if "서버별 개별 설정" in analysis_mode:  # ← 문자열 일부 매칭으로 변경
+                        # 🔧 디버깅: 서버별 선택 상태 출력
+                        print(f"🐛 서버별 개별 설정 모드 진입!")
+                        print(f"🐛 analysis_mode: {analysis_mode}")
+                        print(f"🐛 server_specific_checks: {st.session_state.get('server_specific_checks', {})}")
+                        
                         playbook_tasks = generate_playbook_tasks(
-                            selected_checks,
+                            {},  # 서버별 모드에서는 selected_checks 대신 server_specific_checks 사용
                             filename_mapping,
                             vulnerability_categories, 
-                            analysis_mode="server_specific",
+                            analysis_mode="server_specific",  # ← 🔑 이 부분이 중요!
                             active_servers=active_servers,
-                            server_specific_checks=st.session_state.server_specific_checks  # 🆕 추가
-                        ) if 'selected_checks' in locals() else []
+                            server_specific_checks=st.session_state.get('server_specific_checks', {})
+                        )
+                        
+                        st.session_state.analysis_mode = "server_specific"  # ← 🔑 올바른 모드 저장
+                        st.session_state.server_task_details = generate_server_task_details(
+                            st.session_state.get('server_specific_checks', {}), vulnerability_categories
+                        )
                     else:
                         playbook_tasks = generate_playbook_tasks(
                             selected_checks, filename_mapping, vulnerability_categories,
                             analysis_mode="unified", active_servers=active_servers
-                        ) if 'selected_checks' in locals() else []
-                    
-                    # 백엔드 콘솔에 생성 정보 출력
-                    print(f"\n{'='*80}")
-                    print(f"📝 PLAYBOOK 생성 시작")
-                    print(f"{'='*80}")
-                    print(f"🎯 대상 서버: {active_servers}")
-                    print(f"📋 선택된 점검 항목: {len(playbook_tasks)}개")
-                    print(f"📁 결과 폴더: {result_folder_path}")
-                    if playbook_tasks:
-                        print("📄 포함될 파일들:")
-                        for i, task in enumerate(playbook_tasks, 1):
-                            print(f"   {i}. {task}")
-                    print(f"{'='*80}")
-                    
-                    # 플레이북 파일로 저장 (개선된 방식)
-                    playbook_path, playbook_filename, timestamp = save_generated_playbook(active_servers, playbook_tasks, result_folder_path)
-                    
+                        )
+                        st.session_state.analysis_mode = "unified"
+                        st.session_state.server_task_details = None
+
+                    # 🔧 디버깅: 생성된 태스크 수 확인
+                    print(f"🐛 최종 analysis_mode: {st.session_state.get('analysis_mode', 'None')}")
+                    print(f"🐛 생성된 playbook_tasks 수: {len(playbook_tasks)}")
+                    print(f"🐛 playbook_tasks 내용: {playbook_tasks[:5] if playbook_tasks else '없음'}")
+
+                    # 플레이북 파일로 저장할 때도 수정:
+                    if "서버별 개별 설정" in analysis_mode:  # ← 문자열 매칭 수정
+                        playbook_path, playbook_filename, timestamp = save_generated_playbook(
+                            active_servers, 
+                            playbook_tasks, 
+                            result_folder_path,
+                            analysis_mode="server_specific",  # ← 🔑 정확한 모드 전달
+                            server_specific_checks=st.session_state.get('server_specific_checks', {}),
+                            vulnerability_categories=vulnerability_categories,
+                            filename_mapping=filename_mapping
+                        )
+                    else:
+                        playbook_path, playbook_filename, timestamp = save_generated_playbook(
+                            active_servers, 
+                            playbook_tasks, 
+                            result_folder_path,
+                            analysis_mode="unified",
+                            vulnerability_categories=vulnerability_categories,
+                            filename_mapping=filename_mapping
+                        )
+                          
                     # inventory 파일 저장 (결과 폴더 내에)
                     inventory_path = save_inventory_file(servers_info, active_servers, result_folder_path)
                     
@@ -633,85 +739,134 @@ def render_main_app():
         # 플레이북이 생성된 후 실행 단계
         if st.session_state.playbook_generated:
             # 생성된 플레이북 정보 표시
-            st.success("✅ 플레이북 생성 및 저장 완료!")
+            st.success("✅ 체크리스트들을 기반으로 인벤토리 & 플레이북 생성 및 저장 완료!")
+            st.warning("⚠️ 이전에 생성된 플레이북이 보일 경우 하단의 🔄 새로운 점검 시작 버튼을 눌러주세요.")
             
-            # 선택된 점검 항목 카운트 및 서비스별 상세 목록 생성
-            total_checks = count_selected_checks(st.session_state.selected_checks, vulnerability_categories)
-            
-            # 서비스별로 선택된 항목들 정리
-            selected_by_service = {}
-            
-            for service, selected in st.session_state.selected_checks.items():
-                if service in ["Server-Linux", "PC-Linux", "MySQL", "Apache", "Nginx", "PHP"] and isinstance(selected, dict):
-                    service_tasks = []
-                    
-                    if selected.get("all", False):
-                        # 전체 선택 시 모든 항목 추가
-                        for category, items in vulnerability_categories[service]["subcategories"].items():
-                            service_tasks.extend(items)
-                    else:
-                        # 개별 선택된 항목만 추가
-                        categories = selected.get("categories", {})
-                        for category, items in categories.items():
-                            if isinstance(items, dict):
-                                for item, item_selected in items.items():
-                                    if item_selected:
-                                        service_tasks.append(item)
-                    
-                    if service_tasks:
-                        selected_by_service[service] = service_tasks
+            # 🔧 분석 모드에 따른 다른 처리
+            if st.session_state.get('analysis_mode') == "⚙️ 서버별 개별 설정":
+                # 서버별 개별 설정 모드
+                total_checks = 0
+                if st.session_state.get('server_task_details'):
+                    total_checks = sum(details['count'] for details in st.session_state.server_task_details.values())
                 
-                elif selected and service in vulnerability_categories:
-                    # 단순 boolean 선택 방식
-                    service_tasks = []
-                    for category, items in vulnerability_categories[service]["subcategories"].items():
-                        service_tasks.extend(items)
-                    if service_tasks:
-                        selected_by_service[service] = service_tasks
-            
-            # 기본 정보
-            playbook_info = {
-                "대상 서버": active_servers,
-                "총 점검 항목": f"{total_checks}개",
-                "점검 서비스": list(selected_by_service.keys()),
-                "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
-                "저장 경로": st.session_state.playbook_path,
-                "inventory 파일": st.session_state.inventory_path,
-                "결과 저장 폴더": f"{st.session_state.result_folder_path}/results/",
-                "생성 시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "예상 소요 시간": f"{len(active_servers) * 3}분"
-            }
-            
-            # 기본 정보 표시
-            st.json(playbook_info)
-            
-            # 선택된 점검 항목을 서비스별로 상세 표시
-            if selected_by_service:
-                st.subheader("📋 선택된 점검 항목 상세 목록")
+                # 기본 정보 (서버별 모드)
+                playbook_info = {
+                    "분석 모드": "서버별 개별 설정",
+                    "대상 서버": active_servers,
+                    "총 점검 항목": f"{total_checks}개 (모든 서버 합계)",
+                    "서버별 점검 수": {server: details['count'] for server, details in st.session_state.get('server_task_details', {}).items()},
+                    "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
+                    "저장 경로": st.session_state.playbook_path,
+                    "inventory 파일": st.session_state.inventory_path,
+                    "결과 저장 폴더": f"{st.session_state.result_folder_path}/results/",
+                    "생성 시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "예상 소요 시간": f"{len(active_servers) * 2}분 (서버별 병렬 실행)"
+                }
                 
-                # 서비스별 탭 또는 expander로 표시
-                for service, tasks in selected_by_service.items():
-                    service_icons = {
-                        "Server-Linux": "🐧",
-                        "PC-Linux": "🖥️", 
-                        "MySQL": "🐬",
-                        "Apache": "🪶",
-                        "Nginx": "⚡",
-                        "PHP": "🐘"
-                    }
-                    
-                    icon = service_icons.get(service, "📦")
-                    
-                    with st.expander(f"{icon} {service} ({len(tasks)}개 점검 항목)", expanded=True):
-                        for i, task in enumerate(tasks, 1):
-                            st.markdown(f"{i}. {task}")
+                # 기본 정보 표시
+                st.json(playbook_info)
                 
-                # 요약 정보
-                st.info(f"💡 총 {len(selected_by_service)}개 서비스에서 {total_checks}개 점검 항목이 선택되었습니다.")
+                # 🆕 서버별 상세 점검 항목 표시
+                if st.session_state.get('server_task_details'):
+                    st.subheader("📋 서버별 선택된 점검 항목 상세")
+                    
+                    for server_name, details in st.session_state.server_task_details.items():
+                        with st.expander(f"🖥️ {server_name} ({details['count']}개 점검 항목)", expanded=True):
+                            for service, tasks in details['services'].items():
+                                if tasks:
+                                    service_icons = {
+                                        "Server-Linux": "🐧", "PC-Linux": "🖥️", 
+                                        "MySQL": "🐬", "Apache": "🪶", 
+                                        "Nginx": "⚡", "PHP": "🐘"
+                                    }
+                                    icon = service_icons.get(service, "📦")
+                                    
+                                    st.markdown(f"**{icon} {service} ({len(tasks)}개 항목)**")
+                                    for i, task in enumerate(tasks, 1):
+                                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{i}. {task}")
+                                    st.markdown("")
+                    
+                    # 요약 정보
+                    st.info(f"💡 총 {len(st.session_state.server_task_details)}개 서버에서 {total_checks}개 점검 항목이 선택되었습니다.")
+                else:
+                    st.warning("⚠️ 서버별 선택 정보를 찾을 수 없습니다.")
             
             else:
-                st.warning("⚠️ 선택된 점검 항목이 없습니다.")
+                # 통일 설정 모드 (기존 로직)
+                total_checks = count_selected_checks(st.session_state.selected_checks, vulnerability_categories)
+                
+                # 서비스별로 선택된 항목들 정리
+                selected_by_service = {}
+                
+                for service, selected in st.session_state.selected_checks.items():
+                    if service in ["Server-Linux", "PC-Linux", "MySQL", "Apache", "Nginx", "PHP"] and isinstance(selected, dict):
+                        service_tasks = []
                         
+                        if selected.get("all", False):
+                            # 전체 선택 시 모든 항목 추가
+                            for category, items in vulnerability_categories[service]["subcategories"].items():
+                                service_tasks.extend(items)
+                        else:
+                            # 개별 선택된 항목만 추가
+                            categories = selected.get("categories", {})
+                            for category, items in categories.items():
+                                if isinstance(items, dict):
+                                    for item, item_selected in items.items():
+                                        if item_selected:
+                                            service_tasks.append(item)
+                        
+                        if service_tasks:
+                            selected_by_service[service] = service_tasks
+                    
+                    elif selected and service in vulnerability_categories:
+                        # 단순 boolean 선택 방식
+                        service_tasks = []
+                        for category, items in vulnerability_categories[service]["subcategories"].items():
+                            service_tasks.extend(items)
+                        if service_tasks:
+                            selected_by_service[service] = service_tasks
+                
+                # 기본 정보 (통일 모드)
+                playbook_info = {
+                    "분석 모드": "모든 서버 동일 설정",
+                    "대상 서버": active_servers,
+                    "총 점검 항목": f"{total_checks}개",
+                    "점검 서비스": list(selected_by_service.keys()),
+                    "생성된 플레이북": os.path.basename(st.session_state.playbook_path),
+                    "저장 경로": st.session_state.playbook_path,
+                    "inventory 파일": st.session_state.inventory_path,
+                    "결과 저장 폴더": f"{st.session_state.result_folder_path}/results/",
+                    "생성 시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                
+                # 기본 정보 표시
+                st.json(playbook_info)
+                
+                # 선택된 점검 항목을 서비스별로 상세 표시
+                if selected_by_service:
+                    st.subheader("📋 선택된 점검 항목 상세 목록")
+                    
+                    # 서비스별 탭 또는 expander로 표시
+                    for service, tasks in selected_by_service.items():
+                        service_icons = {
+                            "Server-Linux": "🐧", "PC-Linux": "🖥️", 
+                            "MySQL": "🐬", "Apache": "🪶",
+                            "Nginx": "⚡", "PHP": "🐘"
+                        }
+                        
+                        icon = service_icons.get(service, "📦")
+                        
+                        with st.expander(f"{icon} {service} ({len(tasks)}개 점검 항목)", expanded=True):
+                            for i, task in enumerate(tasks, 1):
+                                st.markdown(f"{i}. {task}")
+                    
+                    # 요약 정보
+                    st.info(f"💡 총 {len(selected_by_service)}개 서비스에서 {total_checks}개 점검 항목이 선택되었습니다.")
+                
+                else:
+                    st.warning("⚠️ 선택된 점검 항목이 없습니다.")
+                    
+            # 플레이북 경로 표시                        
             # 실행 경고 메시지
             st.warning("⚠️ 실제 서버에 변경 사항이 적용됩니다!")
             if st.button("▶️ 실행 시작 (생성된 Ansible 플레이북을 실제로 실행)", type="secondary", use_container_width=True):
@@ -884,10 +1039,45 @@ def render_main_app():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: gray;'>
-    <p><strong>Team 2</strong> | Ansible 기반 서버 취약점 자동 점검 및 보고서 생성 시스템</p>
-    <p>KISA 한국인터넷진흥원 2024.06 클라우드 취약점 점검 가이드 기반</p>
+    <p><strong>Askable</strong> | Ansible 기반 취약점 자동 점검 및 공격 탐지 시스템</p>
+    <p>2025 현대오토에버 모빌리티 SW스쿨 IT보안 2기 @ Development Team 2</p>
     </div>
     """, unsafe_allow_html=True)
+
+def generate_server_task_details(server_specific_checks, vulnerability_categories):
+    """서버별 선택된 태스크 상세 정보 생성"""
+    server_details = {}
+    
+    for server_name, server_checks in server_specific_checks.items():
+        server_detail = {
+            'count': 0,
+            'services': {}
+        }
+        
+        for service, selected in server_checks.items():
+            if service in vulnerability_categories and isinstance(selected, dict):
+                service_tasks = []
+                
+                if selected.get("all", False):
+                    # 전체 선택 시 모든 항목 추가
+                    for category, items in vulnerability_categories[service]["subcategories"].items():
+                        service_tasks.extend(items)
+                else:
+                    # 개별 선택된 항목만 추가
+                    categories = selected.get("categories", {})
+                    for category, items in categories.items():
+                        if isinstance(items, dict):
+                            for item, item_selected in items.items():
+                                if item_selected:
+                                    service_tasks.append(item)
+                
+                if service_tasks:
+                    server_detail['services'][service] = service_tasks
+                    server_detail['count'] += len(service_tasks)
+        
+        server_details[server_name] = server_detail
+    
+    return server_details
 
 # 🆕 추가 함수들
 def render_server_analysis_options(server_name, vulnerability_categories, tab_index):
