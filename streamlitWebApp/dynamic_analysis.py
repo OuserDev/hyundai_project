@@ -1,5 +1,5 @@
 """
-동적 분석 페이지 - nmap 포트스캐닝 및 웹 애플리케이션 보안 테스트
+공격 탐지 페이지 - nmap 포트스캐닝 및 웹 애플리케이션 보안 테스트
 """
 import streamlit as st
 import socket
@@ -225,12 +225,11 @@ def log_event(source, ip, service=None):
         f.write(log_line + "\n")
 
 def main():
-    """동적 분석 메인 페이지"""
+    """공격 탐지 메인 페이지"""
     
     # 메인 헤더
-    st.title("Askable: ansible 기반 서버 취약점 자동 점검 시스템")
             
-    st.header("🔍 동적 분석 (Dynamic Analysis)")
+    st.header("🔍 공격 탐지 (Dynamic Analysis)")
     st.markdown("실시간 보안 위협 탐지 및 공격 시뮬레이션을 수행합니다.")
     st.markdown("---")
         
@@ -412,8 +411,8 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: gray;'>
-    <p><strong>동적 분석 모듈</strong> | nmap 포트스캐닝 및 웹 애플리케이션 보안 테스트</p>
-    <p>실시간 보안 위협 탐지 및 모니터링</p>
+    <p><strong>Askable</strong> | Ansible 기반 취약점 자동 점검 및 공격 탐지 시스템</p>
+    <p>2025 현대오토에버 모빌리티 SW스쿨 IT보안 2기 @ Development Team 2</p>
     </div>
     """, unsafe_allow_html=True)
 

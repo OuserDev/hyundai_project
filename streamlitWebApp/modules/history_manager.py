@@ -169,20 +169,20 @@ def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=
         # 분석 모듈 섹션
         st.sidebar.markdown("## 🔍 분석 모듈")
 
-        # 정적 분석 (메인 페이지)로 이동 버튼
-        if st.sidebar.button("📋 정적 분석 (KISA 가이드라인)", use_container_width=True):
+        # 취약점 점검 (메인 페이지)로 이동 버튼
+        if st.sidebar.button("📋 취약점 점검 (Static Analysis)", use_container_width=True):
             st.query_params.clear()  # 모든 쿼리 파라미터 제거해서 메인으로
             st.rerun()
 
-        # 동적 분석 페이지로 이동 버튼
-        if st.sidebar.button("🔍 동적 분석 (Dynamic Analysis)", use_container_width=True):
-            st.query_params.update({"page": "dynamic_analysis"})
+        # 공격 탐지 페이지로 이동 버튼
+        if st.sidebar.button("🔍 공격 탐지 (Dynamic Analysis)", use_container_width=True):
+            st.query_params.from_dict({"page": "dynamic_analysis"})  # 🆕 수정
             st.rerun()
 
-        # 스케줄링 페이지로 이동 버튼
-        if st.sidebar.button("⏰ 스케줄링 (Scheduling)", use_container_width=True):
-            st.query_params.update({"page": "scheduling"})
-            st.rerun()
+        # # 스케줄링 페이지로 이동 버튼
+        # if st.sidebar.button("⏰ 스케줄링 (Scheduling)", use_container_width=True):
+        #     st.query_params.from_dict({"page": "scheduling"})  # 🆕 수정
+        #     st.rerun()
     
     st.sidebar.markdown("---")
                 
@@ -214,13 +214,14 @@ def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=
             button_text = f"{status_icon} {record['display_name']}"
             button_help = f"상태: {record['status']}, JSON 결과: {record['json_count']}개"
             
+            # 수정된 코드 (해결)
             if st.sidebar.button(
                 button_text, 
                 key=f"history_{record['timestamp']}",
                 help=button_help
             ):
-                # 분석 리포트 페이지로 이동
-                st.query_params.update({"report": record['timestamp']})
+                # 🆕 from_dict로 한 번에 설정 (브라우저 히스토리 문제 방지)
+                st.query_params.from_dict({"report": record['timestamp']})
                 st.rerun()
         
         st.sidebar.markdown("---")
