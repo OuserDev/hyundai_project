@@ -49,134 +49,130 @@ def process_message(message):
         st.session_state.processed_events = []
     if 'blocked_ips' not in st.session_state:
         st.session_state.blocked_ips = set()
-    # 🆕 공격 유형별 추적을 위한 딕셔너리 (IP별로 어떤 공격을 당했는지 기록)
     if 'attack_history' not in st.session_state:
-        st.session_state.attack_history = {}  # {ip: {attack_type1, attack_type2, ...}}
+        st.session_state.attack_history = {}
+    if 'blocked_set_shown' not in st.session_state:
+        st.session_state.blocked_set_shown = set()
     
-    # 1. fail2ban 메시지 처리
+    # IP 차단 제외 함수
+    def should_block_ip(ip):
+        if not ip or not re.match(r'^\d+\.\d+\.\d+\.\d+$', ip):
+            return False
+        if ip.startswith('127.'):  # 루프백
+            return False
+        if ip == '0.0.0.0':  # 로컬호스트
+            return False
+        return True
+    
+    # 공통 차단 처리 함수
+    def handle_attack(attack_type, ip, service=None, threat_message=None):
+        if not should_block_ip(ip):
+            return None
+        
+        if ip not in st.session_state.attack_history:
+            st.session_state.attack_history[ip] = set()
+        
+        if attack_type not in st.session_state.attack_history[ip]:
+            log_event(attack_type, ip, service)
+            trigger_ansible(ip)
+            
+            # IP별 차단 셋트 한 번만 표시
+            if ip not in st.session_state.blocked_set_shown:
+                responses = [
+                    f"🛡️ [자동 대응] 공격자 IP {ip}를 모든 Managed Node에서 차단 완료",
+                    f"⚡ [실시간 차단] 관리 서버들에서 {ip} 접근 차단"
+                ]
+                for response in responses:
+                    st.session_state.processed_events.append(response)
+                st.session_state.blocked_set_shown.add(ip)
+            
+            st.session_state.attack_history[ip].add(attack_type)
+            st.session_state.blocked_ips.add(ip)
+            
+            return threat_message
+        return None
+    
+    # 1. fail2ban 브루트포스 처리
     fail2ban_match = re.search(r'\[fail2ban\].*?탐지:\s*([\d\.]+)', message)
     if fail2ban_match:
         ip = fail2ban_match.group(1)
-        service = "sshd"  # 기본값
+        service = "sshd"
         
-        # 서비스 정보 추출
         service_match = re.search(r'on\s+(\w+)', message)
         if service_match:
             service = service_match.group(1)
         
-        # 🆕 이 IP에서 이 공격 유형이 처음인지 확인
-        if ip not in st.session_state.attack_history:
-            st.session_state.attack_history[ip] = set()
-        
-        if "fail2ban" not in st.session_state.attack_history[ip]:
-            log_event("fail2ban", ip, service)
-            trigger_ansible(ip)
-            
-            # 공격 유형 기록
-            st.session_state.attack_history[ip].add("fail2ban")
-            # 전체 차단 IP 목록에도 추가
-            st.session_state.blocked_ips.add(ip)
-            
-            return f"🚨 [위협 탐지] {ip} (서비스: {service}) SSH 브루트포스 공격 차단 실행"
-        else:
-            # 같은 유형의 공격은 이미 처리됨
-            return None
+        return handle_attack(
+            "fail2ban", 
+            ip, 
+            service, 
+            f"🚨 [위협 탐지] {ip} (서비스: {service}) SSH 브루트포스 공격 차단 실행"
+        )
     
-    # 🆕 2. SQL 인젝션 탐지 메시지 처리
-    sql_injection_patterns = [
-        r'\[.*?\].*?\[.*?\].*?\[WebMonitor\].*?SQL.*?Injection.*?탐지:\s*([\d\.]+)',  # 당신의 패턴
-        r'\[SQL.*?Injection\].*?탐지:\s*([\d\.]+)',
-        r'SQL.*?인젝션.*?탐지.*?([\d\.]+)',
-        r'WebMonitor.*?SQL.*?탐지.*?([\d\.]+)',
+    # 2. PSAD 포트스캔 처리
+    psad_match = re.search(r'\[PSAD\].*?탐지:\s*([\d\.]+)', message)
+    if psad_match:
+        ip = psad_match.group(1)
+        return handle_attack(
+            "psad", 
+            ip, 
+            "port_scan", 
+            f"🚨 [위협 탐지] {ip} 이상 행동 차단 실행"
+        )
+    
+    # 3. SQL 인젝션 처리 (IP 포함)
+    sql_with_ip_patterns = [
+        r'\[WebMonitor\].*?SQL.*?Injection.*?탐지:\s*([\d\.]+)',
+        r'SQL.*?인젝션.*?탐지.*?([\d\.]+)'
     ]
     
-    for pattern in sql_injection_patterns:
+    for pattern in sql_with_ip_patterns:
         sql_match = re.search(pattern, message, re.IGNORECASE)
         if sql_match:
             ip = sql_match.group(1)
-            
-            # 🆕 이 IP에서 이 공격 유형이 처음인지 확인
-            if ip not in st.session_state.attack_history:
-                st.session_state.attack_history[ip] = set()
-            
-            if "sql_injection" not in st.session_state.attack_history[ip]:
-                log_event("sql_injection", ip, "web_attack")
-                trigger_ansible(ip)
-                
-                # 공격 유형 기록
-                st.session_state.attack_history[ip].add("sql_injection")
-                # 전체 차단 IP 목록에도 추가
-                st.session_state.blocked_ips.add(ip)
-                
-                return f"🚨 [위협 탐지] 웹 애플리케이션 SQL 인젝션 공격 탐지: {ip} → 자동 차단 실행"
-            else:
-                # 같은 유형의 공격은 이미 처리됨
-                return None
-        
-    # 3. PSAD 메시지 처리
-    psad_match = re.search(r'\[PSAD\] 스캐닝 탐지: ([\d\.]+)', message)
-    if psad_match:
-        ip = psad_match.group(1)
-        
-        # 🆕 이 IP에서 이 공격 유형이 처음인지 확인
-        if ip not in st.session_state.attack_history:
-            st.session_state.attack_history[ip] = set()
-        
-        if "psad" not in st.session_state.attack_history[ip]:
-            log_event("psad", ip)
-            trigger_ansible(ip)
-            
-            # 공격 유형 기록
-            st.session_state.attack_history[ip].add("psad")
-            # 전체 차단 IP 목록에도 추가
-            st.session_state.blocked_ips.add(ip)
-            
-            return f"🚨 [위협 탐지] {ip} 포트 스캔 공격 차단 실행"
-        else:
-            # 같은 유형의 공격은 이미 처리됨
-            return None
+            return handle_attack(
+                "sql_injection", 
+                ip, 
+                "web_attack", 
+                f"🚨 [위협 탐지] 웹 애플리케이션 SQL 인젝션 공격 탐지: {ip} → 자동 차단 실행"
+            )
     
-    # 4. 일반적인 보안 위협 메시지 처리
+    # 4. SQL 인젝션 처리 (IP 없음)
+    if re.search(r'\[WebMonitor\].*?SQL.*?Injection.*?탐지', message, re.IGNORECASE):
+        # 메시지 구조: [피해서버] [발신자] [WebMonitor] SQL Injection 탐지:
+        brackets = re.findall(r'\[([^\]]+)\]', message)
+        if len(brackets) >= 2:
+            sender = brackets[1]  # 두 번째 대괄호 = 발신자
+            
+            if re.match(r'^\d+\.\d+\.\d+\.\d+$', sender):
+                detected_ip = sender
+            else:
+                detected_ip = "192.168.55.8"  # 기본 공격자 IP
+            
+            return handle_attack(
+                "sql_injection", 
+                detected_ip, 
+                "web_attack", 
+                f"🚨 [위협 탐지] 웹 애플리케이션 SQL 인젝션 공격 탐지: {detected_ip} (발신: {sender}) → 자동 차단 실행"
+            )
+    
+    # 5. 일반 보안 위협 처리
     suspicious_keywords = ["이상", "현상", "발생", "공격", "침입", "브루트포스", "스캔", "해킹", "침투"]
     
-    # 이미 위에서 처리된 특정 패턴들은 제외
     if not any([
         re.search(r'\[fail2ban\]', message),
         re.search(r'\[PSAD\]', message),
-        re.search(r'WebMonitor.*?SQL.*?Injection', message, re.IGNORECASE),
-        re.search(r'SQL.*?Injection', message, re.IGNORECASE)
+        re.search(r'WebMonitor.*?SQL.*?Injection', message, re.IGNORECASE)
     ]):
         if any(keyword in message.lower() for keyword in suspicious_keywords):
             detected_ip = extract_ip_from_message(message)
-            
             if detected_ip:
-                # 🆕 이 IP에서 이 공격 유형이 처음인지 확인
-                if detected_ip not in st.session_state.attack_history:
-                    st.session_state.attack_history[detected_ip] = set()
-                
-                if "general_attack" not in st.session_state.attack_history[detected_ip]:
-                    # 로그 기록
-                    log_event("security_alert", detected_ip, "suspicious_activity")
-                    
-                    # 차단 대응 메시지 생성
-                    block_responses = [
-                        f"🛡️ [자동 대응] 공격자 IP {detected_ip}를 모든 Managed Node에서 차단 완료",
-                        f"⚡ [실시간 차단] 관리 서버들에서 {detected_ip} 접근 차단"
-                    ]
-                    
-                    # 대응 이력에 추가
-                    for response in block_responses:
-                        st.session_state.processed_events.append(response)
-                    
-                    # 공격 유형 기록
-                    st.session_state.attack_history[detected_ip].add("general_attack")
-                    # 전체 차단 IP 목록에도 추가
-                    st.session_state.blocked_ips.add(detected_ip)
-                
-                    return f"🚨 [위협 탐지] 공격자 IP {detected_ip}에서 네트워크 침투 시도 발생 → 자동 대응 시스템 활성화"
-                else:
-                    # 같은 유형의 공격은 이미 처리됨
-                    return None
+                return handle_attack(
+                    "general_attack", 
+                    detected_ip, 
+                    "suspicious_activity", 
+                    f"🚨 [위협 탐지] 공격자 IP {detected_ip}에서 네트워크 침투 시도 발생 → 자동 대응 시스템 활성화"
+                )
     
     return None
 

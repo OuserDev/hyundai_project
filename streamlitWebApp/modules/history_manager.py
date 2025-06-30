@@ -160,12 +160,6 @@ def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=
     # 관리자만 분석 모듈 섹션을 볼 수 있음
     if st.session_state.get('role') == 'admin':
         
-        # 설정 파일 상태 표시 (기존 코드)
-        if vulnerability_categories and filename_mapping:
-            st.sidebar.success("✅ 설정 파일 로드 완료")
-        else:
-            st.sidebar.error("❌ 설정 파일 로드 실패")
-        
         # 분석 모듈 섹션
         st.sidebar.markdown("## 🔍 분석 모듈")
 
@@ -184,13 +178,19 @@ def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=
         #     st.query_params.from_dict({"page": "scheduling"})  # 🆕 수정
         #     st.rerun()
     
-    st.sidebar.markdown("---")
-                
+    # 🆕 실시간 관제 섹션 추가
+    st.sidebar.markdown("## 📡 실시간 관제")
+
+    # 현황 확인 버튼 - 외부 URL로 이동
+    external_url = "http://192.168.55.5/report.html"
+
+    st.sidebar.link_button("📊 현황 확인", external_url, use_container_width=True)
+        
     # 새로운 분석 기록 섹션
     st.sidebar.markdown("## 📊 분석 기록")
     
     # 기존 기록 디버깅 버튼 (개발 시에만)
-    if st.sidebar.button("🔍 기존 기록 스캔 (새로고침)"):
+    if st.sidebar.button("🔍 기존 기록 스캔 (새로고침)", use_container_width=True):
         debug_existing_logs()
     
     # 분석 기록 로드
@@ -218,7 +218,7 @@ def render_sidebar_with_history(vulnerability_categories=None, filename_mapping=
             if st.sidebar.button(
                 button_text, 
                 key=f"history_{record['timestamp']}",
-                help=button_help
+                help=button_help, use_container_width=True
             ):
                 # 🆕 from_dict로 한 번에 설정 (브라우저 히스토리 문제 방지)
                 st.query_params.from_dict({"report": record['timestamp']})

