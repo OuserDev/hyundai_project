@@ -407,7 +407,7 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: gray;'>
-    <p><strong>Askable</strong> | Ansible 기반 취약점 자동 점검 및 공격 탐지 시스템</p>
+    <p><strong>Askable</strong> | Ansible 기반 보안 자동화 플랫폼</p>
     <p>2025 현대오토에버 모빌리티 SW스쿨 IT보안 2기 @ Development Team 2</p>
     </div>
     """, unsafe_allow_html=True)
