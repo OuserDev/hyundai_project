@@ -1,7 +1,8 @@
 ![image](https://github.com/user-attachments/assets/27435c3d-9746-4c3c-a602-210ebf28f1f3)
 
 # 🔒 Askable: Ansible 기반 보안 자동화 플랫폼
-KISA 가이드라인 기반 취약점 점검 + 실시간 공격 탐지
+KISA 가이드라인 기반 취약점 점검 + 실시간 공격 탐지<br>
+2025.06 현대오토에버 모빌리티 SW스쿨 _ IT보안 2기
 
 ## 👥 Development Team 2
 윤석빈(팀장), 김태곤, 박부성, 김선혁, 이대희
